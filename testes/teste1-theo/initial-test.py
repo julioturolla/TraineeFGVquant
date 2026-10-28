@@ -1,321 +1,386 @@
+"""
+Seleção WALK-FORWARD de parâmetros do Momentum-GARCH, COMPARANDO TRÊS MÉTODOS DE VOL
+(GARCH, GJR-GARCH e EWMA) sobre exatamente os mesmos ativos, datas e regras.
 
+Para a comparação ser coerente:
+  - Cada método tem uma grade do MESMO tamanho (72 configurações = 3 especificações de vol
+    x 4 conjuntos de lookbacks x 2 skips x 3 zonas neutras) e é otimizado separadamente.
+      GARCH / GJR : janela de estimação 504, 756, 1008 dias (GARCH(1,1) / GJR(1,1,1), erros t)
+      EWMA        : lambda 0.90, 0.94, 0.97 (a "memória" do EWMA, análoga à janela)
+  - Mesmos ativos, mesmas datas de rebalanceamento, mesma janela de treino, mesmo custo,
+    mesma regra de pesos e vol targeting; só muda a previsão de volatilidade.
+  - Todos são avaliados no MESMO período fora da amostra.
+  - Além do desempenho da carteira, compara-se a qualidade da previsão de vol por ativo (QLIKE).
+  - Quando o GARCH não converge, a previsão cai para EWMA(0.94); o número de ocorrências é
+    reportado por método, para saber se o GARCH foi de fato avaliado.
+
+Método walk-forward (sem look-ahead): cada configuração é simulada na série inteira; em cada
+data de reotimização, escolhe-se a de melhor score nos `train_days` dias anteriores e aplica-se
+nos meses seguintes. O custo de trocar de configuração é cobrado.
+
+Requer momentum_garch_dados_teste.py na mesma pasta.
+Dependências: pip install arch statsmodels pandas numpy openpyxl matplotlib
+"""
 from __future__ import annotations
 
+import os
+import pickle
 import time
-import warnings
-from dataclasses import dataclass, replace
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
-from arch import arch_model
 
-warnings.filterwarnings("ignore")
-ANN = 252
-PATH_XLSX = "bases de dados\dados_teste.xlsx"
+from momentum_garch_dados_teste import (
+    ANN, PATH_XLSX, Config, backtest, cash_series, ewma_corr, ewma_vol,
+    garch_forecast, load_data, metrics, prepare,
+)
+
+# ----------------------------------------------------------------------------
+# Grades (mesmo tamanho para os três métodos)
+# ----------------------------------------------------------------------------
+METHODS = {
+    "GARCH": [("garch", 504), ("garch", 756), ("garch", 1008)],
+    "GJR":   [("gjr", 504), ("gjr", 756), ("gjr", 1008)],
+    "EWMA":  [("ewma", 0.90), ("ewma", 0.94), ("ewma", 0.97)],
+}
+VOL_SPECS = [s for specs in METHODS.values() for s in specs]
+METHOD_OF = {vi: m for m, specs in METHODS.items() for vi in range(len(VOL_SPECS)) if VOL_SPECS[vi] in specs}
+DEFAULT_VOL = {m: VOL_SPECS.index(specs[1]) for m, specs in METHODS.items()}  # especificação do meio
+
+LOOKBACKS = [(21, 63, 126), (21, 63, 126, 252), (63, 126, 252), (126, 252)]  # do mais curto ao mais longo
+SKIPS = [0, 21]               # 0 = sem skip; 21 = pula o último mês (estilo "12-1")
+DEADBANDS = [0.0, 0.25, 0.5]  # zona neutra do t-stat (histerese)
+DEFAULT_SIGNAL = (1, 0, 0)    # lookbacks (21,63,126,252), sem skip, sem zona neutra (config "original")
 
 
-# CFG GARCH
 @dataclass(frozen=True)
-class Config:
-    start: str = "01/01/1999"         # data inicial
-    vol_model: str = "gjr"            # "garch" | "gjr" | "ewma"
-    garch_window: int = 756           # janela de estimação (~3 anos)
-    refit_every: int = 21             # reestima e rebalanceia a cada ~1 mês
-    horizon: int = 21                 # horizonte da previsão de vol (dias)
-    min_obs: int = 504                # histórico mínimo antes do primeiro sinal
-    min_asset_obs: int = 252          # histórico mínimo por ativo na janela
-    min_coverage: float = 0.80        # cobertura mínima para o ativo entrar no universo
-    mom_lookbacks: tuple = (21, 63, 126, 252)
-    target_vol: float = 0.10          # vol anual alvo da carteira
-    max_leverage: float = 1.0         # exposiçao bruta maxima
-    long_only: bool = True            # False => permite vendido
-    corr_halflife: int = 63
-    corr_shrink: float = 0.2
-    cost_bps: float = 5.0             # custo por unidade de turnover
-    cash_rate_anual: float = 0.0      # usado só se o cdi não for fornecido
+class OptConfig:
+    train_days: int = 1260        # janela de treino (~5 anos)
+    reopt_days: int = 252         # reotimiza a cada ~12 meses
+    expanding: bool = False       # True => janela expansiva em vez de móvel
+    vol_error_lambda: float = 1.0 # peso da penalidade de erro de vol targeting
+    neighbor_smoothing: bool = True
+    n_workers: int | None = None  # None => os.cpu_count()
+    cache_path: str = "cache_vol_forecasts.pkl"
 
 
-
-# 0) Carga e preparação dos dados
-
-def load_data(path: str = PATH_XLSX) -> pd.DataFrame:
-    raw = pd.read_excel(path, sheet_name=0, header=None)
-    header = raw.iloc[3].astype(str)
-    tickers = ["PETR4"] + [h.strip().split("\n")[-1] for h in header.iloc[2:]]
-    df = raw.iloc[4:, :].copy()
-    df.columns = ["Data"] + tickers
-    df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
-    df = df.dropna(subset=["Data"]).set_index("Data").sort_index()
-    df = df.replace("-", np.nan).apply(pd.to_numeric, errors="coerce")
-    return df[~df.index.duplicated(keep="last")]
-
-
-def select_assets(prices: pd.DataFrame, min_coverage: float) -> pd.DataFrame:
-    """Remove ativos cuja cobertura (obs válidas / dias úteis entre 1ª e última) é baixa."""
-    keep = []
-    for c in prices.columns:
-        s = prices[c].dropna()
-        if len(s) < 500:
-            print(f"[universo] {c}: removido ({len(s)} obs)")
+# ----------------------------------------------------------------------------
+# 1) Previsões de vol de todas as especificações (cache incremental e paralelismo)
+# ----------------------------------------------------------------------------
+def _worker(args):
+    a, r, ew_fb, ew_spec, pos, model, param, horizon, min_asset_obs = args
+    out = np.full(len(pos), np.nan)
+    n_fb = 0
+    w = int(param) if model != "ewma" else 756   # EWMA usa a mesma regra de disponibilidade do GARCH
+    for k, p in enumerate(pos):
+        x = r[max(0, p + 1 - w): p + 1]
+        if np.isfinite(x).sum() < min_asset_obs:
             continue
-        n_bdays = len(pd.bdate_range(s.index[0], s.index[-1]))
-        cov = len(s) / n_bdays
-        if cov < min_coverage:
-            print(f"[universo] {c}: removido (cobertura {cov:.0%}, {len(s)} obs)")
+        if model == "ewma":
+            out[k] = ew_spec[p]
+            continue
+        s = garch_forecast(pd.Series(x), model, horizon, min_asset_obs)
+        if np.isfinite(s):
+            out[k] = s
         else:
-            keep.append(c)
-    return prices[keep]
+            out[k] = ew_fb[p]; n_fb += 1       # fallback EWMA(0.94)
+    return a, out, n_fb
 
 
-def prepare(prices: pd.DataFrame, cfg: Config, fx: pd.Series | None = None,
-            brl_assets: tuple = ("PETR4",)):
-    """Retorna preços (opcionalmente em BRL), retornos simples e log, e log-preço ffill."""
-    prices = prices.loc[cfg.start:]
-    prices = select_assets(prices, cfg.min_coverage)
+def get_vol_forecasts(logr: pd.DataFrame, cfg: Config, ocfg: OptConfig):
+    reb = logr.index[cfg.min_obs :: cfg.refit_every]
+    pos = [logr.index.get_loc(t) for t in reb]
+    fingerprint = (list(logr.columns), str(logr.index[0]), str(logr.index[-1]),
+                   cfg.horizon, cfg.refit_every, cfg.min_obs, cfg.min_asset_obs)
 
-    if fx is not None:
-        fx = fx.reindex(prices.index).ffill()
-        usd = [c for c in prices.columns if c not in brl_assets]
-        prices = prices.copy()
-        prices[usd] = prices[usd].mul(fx, axis=0)
-    else:
-        print("[aviso] sem série de câmbio: PETR4 em BRL e os demais em USD. "
-              "Passe `fx` (USD/BRL) para obter uma carteira em reais.")
+    cache = {}  # {(modelo, parametro): (DataFrame, n_fallbacks)}
+    if os.path.exists(ocfg.cache_path):
+        with open(ocfg.cache_path, "rb") as f:
+            c = pickle.load(f)
+        if c.get("fingerprint") == fingerprint:
+            cache = c["specs"]
+            print(f"[vol] cache: {sum(s in cache for s in VOL_SPECS)}/{len(VOL_SPECS)} especificações prontas")
 
-    simple = pd.DataFrame(index=prices.index, columns=prices.columns, dtype=float)
-    for c in prices.columns:  # retorno entre observações validas do proprio ativo
-        simple[c] = prices[c].dropna().pct_change().reindex(prices.index)
-    logr = np.log1p(simple)
-    logp = np.log(prices).ffill(limit=5)  # soh para o momentum (atravessa feriados)
-    return prices, simple, logr, logp
+    ew_fb = ewma_vol(logr, 0.94)
+    n = ocfg.n_workers or os.cpu_count() or 1
+    for spec in VOL_SPECS:
+        if spec in cache:
+            continue
+        model, param = spec
+        t0 = time.time()
+        ew_spec = ewma_vol(logr, param) if model == "ewma" else ew_fb
+        tasks = [(a, logr[a].values, ew_fb[a].values, ew_spec[a].values, pos, model, param,
+                  cfg.horizon, cfg.min_asset_obs) for a in logr.columns]
+        if n > 1:
+            with ProcessPoolExecutor(min(n, len(tasks))) as ex:
+                res = list(ex.map(_worker, tasks))
+        else:
+            res = [_worker(t) for t in tasks]
+        df = pd.DataFrame(index=reb, columns=logr.columns, dtype=float)
+        for a, arr, _ in res:
+            df[a] = arr
+        cache[spec] = (df, sum(r[2] for r in res))
+        with open(ocfg.cache_path, "wb") as f:     # salva a cada especificação (retomável)
+            pickle.dump({"fingerprint": fingerprint, "specs": cache}, f)
+        print(f"[vol] {model}-{param} pronto em {time.time() - t0:.0f}s", flush=True)
 
-
-
-# 1) Previsão de volatilidade
-
-def ewma_vol(r: pd.DataFrame, lam: float = 0.94) -> pd.DataFrame:
-    """Vol diária EWMA (benchmark e fallback). Ignora NaN dos feriados."""
-    out = {}
-    for c in r.columns:
-        x = r[c].dropna()
-        out[c] = np.sqrt((x ** 2).ewm(alpha=1 - lam, adjust=False).mean())
-    return pd.DataFrame(out).reindex(r.index).ffill(limit=5)
-
-
-def garch_forecast(x: pd.Series, model: str, horizon: int, min_obs: int) -> float:
-    x = x.dropna() * 100
-    if len(x) < min_obs:
-        return np.nan
-    try:
-        am = arch_model(x, mean="Zero", vol="GARCH", p=1,
-                        o=1 if model == "gjr" else 0, q=1, dist="t", rescale=False)
-        res = am.fit(disp="off", show_warning=False)
-        if res.convergence_flag != 0:
-            return np.nan
-        var_path = res.forecast(horizon=horizon, reindex=False).variance.values[-1]
-        return float(np.sqrt(var_path.mean()) / 100)
-    except Exception:
-        return np.nan
+    sigmas = {vi: cache[s][0] for vi, s in enumerate(VOL_SPECS)}
+    fallbacks = {vi: cache[s][1] for vi, s in enumerate(VOL_SPECS)}
+    return reb, sigmas, fallbacks
 
 
-def build_vol_forecasts(logr: pd.DataFrame, cfg: Config) -> pd.DataFrame:
-    dates = logr.index
-    reb = dates[cfg.min_obs :: cfg.refit_every]
-    ew = ewma_vol(logr)
-    out = pd.DataFrame(index=reb, columns=logr.columns, dtype=float)
-    n_fallback = 0
-
+# ----------------------------------------------------------------------------
+# 2) Pesos por configuração (correlações e retornos acumulados em cache)
+# ----------------------------------------------------------------------------
+def precompute_corr(logr, reb, cfg: Config):
+    Rs = []
     for t in reb:
-        i = dates.get_loc(t)
-        win = logr.iloc[max(0, i + 1 - cfg.garch_window) : i + 1]
-        for c in logr.columns:
-            s = np.nan
-            if cfg.vol_model != "ewma":
-                s = garch_forecast(win[c], cfg.vol_model, cfg.horizon, cfg.min_asset_obs)
-            if np.isnan(s) and win[c].notna().sum() >= cfg.min_asset_obs:
-                s = ew.loc[t, c]
-                n_fallback += cfg.vol_model != "ewma"
-            out.loc[t, c] = s
-    if cfg.vol_model != "ewma":
-        print(f"[vol] fallback para EWMA em {n_fallback} de {out.notna().sum().sum()} previsões")
-    return out
-
-
-# 2) Momentum ajustado à vol (t-stat), vários lookbacks
-def momentum_tstat(logp: pd.DataFrame, sigma: pd.DataFrame, cfg: Config) -> pd.DataFrame:
-    scores = []
-    for L in cfg.mom_lookbacks:
-        cum = (logp - logp.shift(L)).reindex(sigma.index)
-        scores.append(cum / (sigma * np.sqrt(L)))
-    return sum(scores) / len(scores)
-
-
-
-# 3) pesos: momentum = direção, vol = tamanho
-def ewma_corr(win: pd.DataFrame, halflife: int, shrink: float) -> np.ndarray:
-    n = len(win)
-    w = 0.5 ** (np.arange(n)[::-1] / halflife)
-    C = np.atleast_2d(np.cov(win.fillna(0).values.T, aweights=w))
-    d = np.sqrt(np.diag(C))
-    d[d == 0] = 1.0
-    R = C / np.outer(d, d)
-    return (1 - shrink) * R + shrink * np.eye(len(R))
-
-
-def build_weights(logr, logp, sigma, cfg: Config, use_momentum: bool = True) -> pd.DataFrame:
-    mom = momentum_tstat(logp, sigma, cfg)
-    W = pd.DataFrame(0.0, index=sigma.index, columns=sigma.columns)
-
-    for t in sigma.index:
-        s, m = sigma.loc[t], mom.loc[t]
-        ok = s.notna() & m.notna()
-        if ok.sum() == 0:
-            continue
-        cols = ok[ok].index
-
-        direction = np.sign(m[cols]) if use_momentum else pd.Series(1.0, index=cols)
-        if cfg.long_only:
-            direction = direction.clip(lower=0)
-        if (direction != 0).sum() == 0:
-            continue
-
-        raw = (direction / s[cols]).values
         i = logr.index.get_loc(t)
-        win = logr[cols].iloc[max(0, i + 1 - 4 * cfg.corr_halflife) : i + 1]
-        R = ewma_corr(win, cfg.corr_halflife, cfg.corr_shrink)
-        sig = s[cols].values
-        cov = R * np.outer(sig, sig) * ANN
-        port_vol = np.sqrt(raw @ cov @ raw)
-        if port_vol <= 0:
+        win = logr.iloc[max(0, i + 1 - 4 * cfg.corr_halflife): i + 1]
+        Rs.append(ewma_corr(win, cfg.corr_halflife, cfg.corr_shrink))
+    return Rs
+
+
+def precompute_cum(logp, reb):
+    cum = {}
+    for L in {L for lb in LOOKBACKS for L in lb}:
+        for sk in SKIPS:
+            cum[(L, sk)] = (logp.shift(sk) - logp.shift(L + sk)).reindex(reb).values
+    return cum
+
+
+def make_weights(sigma, cum, Rs, lookbacks, skip, deadband, cfg: Config, use_momentum=True):
+    S = sigma.values
+    with np.errstate(invalid="ignore", divide="ignore"):
+        M = np.mean([cum[(L, skip)] / (S * np.sqrt(L)) for L in lookbacks], axis=0)
+    T, N = S.shape
+    W = np.zeros((T, N))
+    state = np.zeros(N)
+    started = np.zeros(N, dtype=bool)
+
+    for k in range(T):
+        s, m = S[k], M[k]
+        ok = np.isfinite(s) & np.isfinite(m)
+        if not ok.any():
+            continue
+        new = ok & ~started
+        state[new] = np.sign(m[new])
+        started |= new
+        state[ok & (m > deadband)] = 1.0     # histerese: só muda de lado ao cruzar a zona neutra
+        state[ok & (m < -deadband)] = -1.0
+
+        d = np.where(ok, state if use_momentum else 1.0, 0.0)
+        if cfg.long_only:
+            d = np.clip(d, 0.0, None)
+        if not d.any():
             continue
 
-        w = raw * cfg.target_vol / port_vol
+        idx = np.where(ok)[0]
+        sg = s[idx]
+        r = d[idx] / sg
+        cov = Rs[k][np.ix_(idx, idx)] * np.outer(sg, sg) * ANN
+        pv = np.sqrt(r @ cov @ r)
+        if pv <= 0:
+            continue
+        w = r * cfg.target_vol / pv
         gross = np.abs(w).sum()
         if gross > cfg.max_leverage:
             w *= cfg.max_leverage / gross
-        W.loc[t, cols] = w
-    return W
+        W[k, idx] = w
+    return pd.DataFrame(W, index=sigma.index, columns=sigma.columns)
 
 
-# 4) Backtest (pesos em t valem a partir de t+1)
-def cash_series(index: pd.DatetimeIndex, cfg: Config, cdi: pd.Series | None) -> pd.Series:
-    if cdi is not None:
-        return cdi.reindex(index).fillna(0.0)
-    return pd.Series((1 + cfg.cash_rate_anual) ** (1 / ANN) - 1, index=index)
+# ----------------------------------------------------------------------------
+# 3) Simula as três grades
+# ----------------------------------------------------------------------------
+def simulate_grid(simple, logr, logp, cash, cfg: Config, ocfg: OptConfig):
+    reb, sigmas, fallbacks = get_vol_forecasts(logr, cfg, ocfg)
+    Rs = precompute_corr(logr, reb, cfg)
+    cum = precompute_cum(logp, reb)
 
-
-def backtest(simple, W, cash, cfg: Config):
-    Wd = W.reindex(simple.index).ffill().shift(1).loc[W.index[0]:].fillna(0.0)
-    r = simple.loc[Wd.index].fillna(0.0)   # feriado do ativo => sem retorno no dia
-    c = cash.reindex(Wd.index)
-    turnover = Wd.diff().abs().sum(axis=1).fillna(0.0)
-    ret = (Wd * r).sum(axis=1) + (1.0 - Wd.sum(axis=1)) * c - turnover * cfg.cost_bps / 1e4
-    return ret, turnover, Wd
-
-
-
-# 5) Métricas e regressão
-
-def metrics(ret, cash, target_vol=None, turnover=None) -> dict:
-    c = cash.reindex(ret.index).fillna(0.0)
-    ex = ret - c
-    eq = (1 + ret).cumprod()
-    out = {
-        "ret_anual": eq.iloc[-1] ** (ANN / len(ret)) - 1,
-        "vol_anual": ret.std() * np.sqrt(ANN),
-        "sharpe": ex.mean() / ex.std() * np.sqrt(ANN) if ex.std() > 0 else np.nan,
-        "max_drawdown": (eq / eq.cummax() - 1).min(),
-    }
-    if target_vol is not None:
-        out["erro_vol_target"] = ((ret.rolling(63).std() * np.sqrt(ANN)) - target_vol).abs().mean()
-    if turnover is not None:
-        out["turnover_anual"] = turnover.mean() * ANN
-    return out
-
-
-def factor_regression(ret, cash, factors: pd.DataFrame):
-    c = cash.reindex(ret.index).fillna(0.0)
-    X = sm.add_constant(factors.reindex(ret.index).fillna(0.0).sub(c, axis=0))
-    res = sm.OLS(ret - c, X, missing="drop").fit(cov_type="HAC", cov_kwds={"maxlags": 5})
-    print(f"alpha anualizado: {res.params['const'] * ANN:.2%} (t={res.tvalues['const']:.2f})")
-    print(res.params.drop("const").rename("beta").round(3).to_string())
-    return res
-
-
-
-# 6) Escolha de modelo/janela por QLIKE (walk-forward)
-
-def qlike(rv: pd.DataFrame, fc_var: pd.DataFrame) -> float:
-    rv, fc_var = rv.where(rv > 0), fc_var.where(fc_var > 0)
-    ratio = rv / fc_var
-    return float((ratio - np.log(ratio) - 1).stack().mean())
-
-
-def evaluate_vol_models(logr, cfg, models=("garch", "gjr", "ewma"), windows=(504, 756, 1008)):
-    """Proxy de variância realizada: média de r² nos `horizon` dias seguintes."""
-    rv = (logr ** 2).rolling(cfg.horizon, min_periods=cfg.horizon // 2).mean().shift(-cfg.horizon)
-    rows = []
-    for m in models:
-        for w in (windows if m != "ewma" else (0,)):
-            c = replace(cfg, vol_model=m, garch_window=w or cfg.garch_window)
-            fc = build_vol_forecasts(logr, c)
-            rows.append({"modelo": m, "janela": w, "qlike": qlike(rv.reindex(fc.index), fc ** 2)})
-    return pd.DataFrame(rows).sort_values("qlike").reset_index(drop=True)
-
-
-
-# 7) Execução
-
-def run(prices_raw: pd.DataFrame, cfg: Config = Config(), fx=None, cdi=None,
-        factor_cols=("SPY",), plot_path: str | None = None):
-    prices, simple, logr, logp = prepare(prices_raw, cfg, fx)
-    print(f"[universo] {list(prices.columns)} | {prices.index[0].date()} a {prices.index[-1].date()}")
-
+    keys, rets, turns, wds = [], [], [], []
     t0 = time.time()
-    sigma = build_vol_forecasts(logr, cfg)
-    print(f"[vol] {len(sigma)} rebalanceamentos em {time.time() - t0:.0f}s")
+    for vi in range(len(VOL_SPECS)):
+        for li, lb in enumerate(LOOKBACKS):
+            for si, sk in enumerate(SKIPS):
+                for di, db in enumerate(DEADBANDS):
+                    W = make_weights(sigmas[vi], cum, Rs, lb, sk, db, cfg)
+                    r, tr, Wd = backtest(simple, W, cash, cfg)
+                    keys.append((vi, li, si, di)); rets.append(r); turns.append(tr); wds.append(Wd.values)
+    print(f"[grade] {len(keys)} configurações simuladas em {time.time() - t0:.0f}s")
 
-    cash = cash_series(prices.index, cfg, cdi)
+    naive = {}
+    for m, vi in DEFAULT_VOL.items():   # carteira sem momentum, com a vol de cada método
+        Wn = make_weights(sigmas[vi], cum, Rs, LOOKBACKS[1], 0, 0.0, cfg, use_momentum=False)
+        naive[m] = backtest(simple, Wn, cash, cfg)[0]
 
-    W = build_weights(logr, logp, sigma, cfg, use_momentum=True)
-    strat, turn, Wd = backtest(simple, W, cash, cfg)
+    R = pd.concat(rets, axis=1, keys=range(len(keys)))
+    TR = pd.concat(turns, axis=1, keys=range(len(keys)))
+    return R, TR, wds, keys, naive, sigmas, fallbacks, reb
 
-    W_naive = build_weights(logr, logp, sigma, cfg, use_momentum=False)
-    naive, turn_n, _ = backtest(simple, W_naive, cash, cfg)
 
-    cash_ret = cash.reindex(strat.index)
-    table = pd.DataFrame({
-        "Estratégia": metrics(strat, cash, cfg.target_vol, turn),
-        "Ingênua (sem momentum)": metrics(naive, cash, cfg.target_vol, turn_n),
-        "Caixa": metrics(cash_ret, cash),
-    })
-    print("\n" + table.round(4).to_string())
+# ----------------------------------------------------------------------------
+# 4) Seleção walk-forward (um método por vez)
+# ----------------------------------------------------------------------------
+def neighbor_lists(subkeys):
+    """Vizinhos: mesma especificação de vol, diferindo ±1 em exatamente um eixo do sinal."""
+    pos = {k: i for i, k in enumerate(subkeys)}
+    nb = []
+    for k in subkeys:
+        lst = [pos[k]]
+        for ax in (1, 2, 3):
+            for step in (-1, 1):
+                c = list(k); c[ax] += step
+                if tuple(c) in pos:
+                    lst.append(pos[tuple(c)])
+        nb.append(lst)
+    return nb
 
-    print("\nRegressão da estratégia contra fatores:")
-    factor_regression(strat, cash, simple[list(factor_cols)])
+
+def walk_forward(R, TR, wds, cash, keys, sub, cfg: Config, ocfg: OptConfig):
+    idx = R.index
+    Rsub = R.iloc[:, sub]
+    ex = Rsub.sub(cash.reindex(idx), axis=0)
+    verr = ((Rsub.rolling(63).std() * np.sqrt(ANN)) - cfg.target_vol).abs()
+    nb = neighbor_lists([keys[i] for i in sub])
+    cost = cfg.cost_bps / 1e4
+
+    first = ocfg.train_days
+    reopt = list(range(first, len(idx), ocfg.reopt_days))
+    out = pd.Series(np.nan, index=idx[first:])
+    chosen, prev = [], None
+
+    for j, p in enumerate(reopt):
+        lo = 0 if ocfg.expanding else p - ocfg.train_days
+        sh = (ex.iloc[lo:p].mean() / ex.iloc[lo:p].std() * np.sqrt(ANN)).values
+        sc = sh - ocfg.vol_error_lambda * verr.iloc[lo:p].mean().values / cfg.target_vol
+        if ocfg.neighbor_smoothing:
+            sc = np.array([sc[n].mean() for n in nb])
+        best = sub[int(np.nanargmax(sc))]
+        end = reopt[j + 1] if j + 1 < len(reopt) else len(idx)
+
+        seg = R[best].iloc[p:end].copy()
+        if prev is not None and prev != best:      # custo de trocar de configuração
+            real = np.abs(wds[best][p] - wds[prev][p - 1]).sum()
+            seg.iloc[0] += cost * TR[best].iloc[p] - cost * real
+        out.iloc[p - first: end - first] = seg.values
+        k = keys[best]
+        chosen.append({"data": idx[p], "vol": VOL_SPECS[k[0]][1], "lookbacks": LOOKBACKS[k[1]],
+                       "skip": SKIPS[k[2]], "deadband": DEADBANDS[k[3]],
+                       "score_suavizado": float(np.nanmax(sc)), "col": best})
+        prev = best
+    return out, pd.DataFrame(chosen)
+
+
+# ----------------------------------------------------------------------------
+# 5) Qualidade da previsão de vol por ativo (QLIKE, menor = melhor)
+# ----------------------------------------------------------------------------
+def qlike_by_asset(logr, sigmas, reb, cfg: Config, start):
+    rv = (logr ** 2).rolling(cfg.horizon, min_periods=cfg.horizon // 2).mean().shift(-cfg.horizon).reindex(reb)
+    rows = {}
+    for vi, sg in sigmas.items():
+        fc = sg ** 2
+        m = (rv > 0) & (fc > 0)
+        ratio = (rv / fc).where(m)
+        ql = (ratio - np.log(ratio) - 1).loc[start:]
+        rows[vi] = ql.mean()
+    return rows
+
+
+# ----------------------------------------------------------------------------
+# 6) Relatório comparativo
+# ----------------------------------------------------------------------------
+def report(results, R, TR, naive, cash, cfg, logr, sigmas, fallbacks, reb, keys, plot_path=None):
+    oos = results["GARCH"][0].index
+    assert all(results[m][0].index.equals(oos) for m in results), "períodos fora da amostra diferentes"
+    print(f"\nPeríodo fora da amostra (igual para os 3 métodos): {oos[0].date()} a {oos[-1].date()}\n")
+
+    # --- Desempenho da carteira
+    perf = {}
+    for m, (wf, chosen, sub) in results.items():
+        perf[f"{m} (walk-forward)"] = metrics(wf, cash, cfg.target_vol)
+    perf["Ingênua (EWMA, sem momentum)"] = metrics(naive["EWMA"].loc[oos], cash, cfg.target_vol)
+    print(pd.DataFrame(perf).round(4).to_string())
+
+    # --- Diagnóstico por método
+    ex = R.loc[oos].sub(cash.reindex(oos), axis=0)
+    sharpes = ex.mean() / ex.std() * np.sqrt(ANN)
+    diag = {}
+    for m, (wf, chosen, sub) in results.items():
+        sh_sub = sharpes.iloc[sub]
+        wf_sh = metrics(wf, cash)["sharpe"]
+        fixed = [i for i in sub if keys[i] == (DEFAULT_VOL[m],) + DEFAULT_SIGNAL][0]
+        diag[m] = {
+            "Sharpe walk-forward": wf_sh,
+            "Sharpe config fixa (meio da grade)": sharpes.iloc[fixed],
+            "Sharpe grade: mín": sh_sub.min(), "Sharpe grade: mediana": sh_sub.median(),
+            "Sharpe grade: máx (look-ahead)": sh_sub.max(),
+            "% da grade superada pelo walk-forward": (sh_sub < wf_sh).mean(),
+            "trocas de config (em %d reotimizações)" % len(chosen):
+                int((chosen["col"] != chosen["col"].shift()).sum() - 1),
+            "previsões GARCH que caíram p/ EWMA": sum(fallbacks[vi] for vi in range(len(VOL_SPECS))
+                                                    if METHOD_OF[vi] == m and m != "EWMA"),
+        }
+    print("\nDiagnóstico por método (mesma grade de 72 configurações cada):")
+    print(pd.DataFrame(diag).round(3).to_string())
+
+    # --- QLIKE por ativo
+    ql = qlike_by_asset(logr, sigmas, reb, cfg, oos[0])
+    tab = pd.DataFrame({m: ql[DEFAULT_VOL[m]] for m in METHODS})
+    tab.loc["MÉDIA"] = tab.mean()
+    best_spec = {m: min((vi for vi in range(len(VOL_SPECS)) if METHOD_OF[vi] == m),
+                        key=lambda vi: ql[vi].mean()) for m in METHODS}
+    tab.loc["MÉDIA (melhor das 3 espec.)"] = [ql[best_spec[m]].mean() for m in METHODS]
+    print("\nQLIKE da previsão de vol por ativo (menor = melhor; especificação do meio da grade):")
+    print(tab.round(4).to_string())
+    print("Melhor especificação por método:", {m: VOL_SPECS[best_spec[m]] for m in METHODS})
+
+    # --- Parâmetros escolhidos
+    print("\nFrequência dos parâmetros escolhidos:")
+    for m, (wf, chosen, sub) in results.items():
+        print(f" [{m}]")
+        for col in ("vol", "lookbacks", "skip", "deadband"):
+            print(f"   {col}: " + ", ".join(f"{k}={v}" for k, v in chosen[col].astype(str).value_counts().items()))
 
     if plot_path:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(2, 1, figsize=(10, 7), sharex=True,
-                               gridspec_kw={"height_ratios": [3, 2]})
-        (1 + strat).cumprod().plot(ax=ax[0], label="Estratégia")
-        (1 + naive).cumprod().plot(ax=ax[0], label="Ingênua")
-        ax[0].set_yscale("log"); ax[0].legend(); ax[0].set_title("Crescimento de 1 (escala log)")
-        Wd.plot.area(ax=ax[1], linewidth=0); ax[1].set_title("Pesos"); ax[1].legend(loc="upper left", ncol=5)
+        fig, ax = plt.subplots(figsize=(10, 5.5))
+        for m, (wf, _, _) in results.items():
+            (1 + wf).cumprod().plot(ax=ax, label=f"{m} walk-forward")
+        (1 + naive["EWMA"].loc[oos]).cumprod().plot(ax=ax, label="Ingênua (EWMA)", color="gray", ls="--")
+        ax.set_yscale("log"); ax.legend(); ax.set_title("Crescimento de 1 fora da amostra, por método de vol (escala log)")
         plt.tight_layout(); plt.savefig(plot_path, dpi=130)
+    return pd.DataFrame(perf), pd.DataFrame(diag), tab
 
-    return {"weights": W, "sigma": sigma, "strategy": strat, "naive": naive,
-            "turnover": turn, "table": table, "prices": prices}
+
+def run_optimization(prices_raw, cfg: Config = Config(), ocfg: OptConfig = OptConfig(),
+                     fx=None, cdi=None, plot_path=None):
+    prices, simple, logr, logp = prepare(prices_raw, cfg, fx)
+    print(f"[universo] {list(prices.columns)} | {prices.index[0].date()} a {prices.index[-1].date()}")
+    cash = cash_series(prices.index, cfg, cdi)
+
+    R, TR, wds, keys, naive, sigmas, fallbacks, reb = simulate_grid(simple, logr, logp, cash, cfg, ocfg)
+
+    results = {}
+    for m in METHODS:
+        sub = [i for i, k in enumerate(keys) if METHOD_OF[k[0]] == m]
+        wf, chosen = walk_forward(R, TR, wds, cash, keys, sub, cfg, ocfg)
+        results[m] = (wf, chosen, sub)
+
+    perf, diag, qtab = report(results, R, TR, naive, cash, cfg, logr, sigmas, fallbacks, reb, keys, plot_path)
+    return {"results": results, "perf": perf, "diag": diag, "qlike": qtab, "grid_returns": R}
 
 
 if __name__ == "__main__":
     prices_raw = load_data(PATH_XLSX)
     cfg = Config(long_only=True, target_vol=0.10, max_leverage=1.0)
+    ocfg = OptConfig(train_days=1260, reopt_days=252)
 
-    out = run(prices_raw, cfg, fx=None, cdi=None,
-              plot_path="momentum_garch_resultado.png")
-
-
+    out = run_optimization(prices_raw, cfg, ocfg, fx=None, cdi=None,
+                           plot_path="/mnt/user-data/outputs/comparacao_metodos_vol.png")
+    allc = pd.concat([c.drop(columns="col").assign(metodo=m) for m, (_, c, _) in out["results"].items()])
+    allc.to_csv("parametros_escolhidos_por_metodo.csv", index=False)
