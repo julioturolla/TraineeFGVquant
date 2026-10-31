@@ -1,6 +1,28 @@
+"""
+Momentum ajustado à volatilidade + GARCH, aplicado à planilha dados_teste.xlsx.
 
+Base (Economatica, fechamento ajustado a proventos, moeda original):
+    PETR4 (BRL) | FXI, EWJ, SPY, USO, VNQ (USD)
+
+Tratamentos específicos desta base:
+  - "-" vira NaN (feriados de cada mercado e períodos sem negociação).
+  - Retornos são calculados sobre as observações válidas de CADA ativo, então um
+    feriado nos EUA não vira "retorno zero" artificial (o que subestimaria a vol).
+  - Ativos com cobertura ruim são removidos automaticamente (a FXI tem só 366
+    observações esparsas desde 2013 e termina em ago/2026: inviável para GARCH).
+  - A amostra começa em `start` (default 1999) para evitar o período de
+    hiperinflação do PETR4 (preços ~1e-10 e retornos de +50% ao dia).
+  - A planilha NÃO traz CDI nem câmbio. Ambos são opcionais:
+        * `fx` (USD/BRL diário) converte os ativos em dólar para reais;
+        * `cdi` (retorno diário) rende o caixa; sem ele, usa `cash_rate_anual` fixo.
+    Sem `fx`, o PETR4 (BRL) e os demais (USD) ficam em moedas diferentes: o código
+    roda, mas a carteira NÃO é uma carteira em reais. Veja o aviso no console.
+
+Dependências: pip install arch statsmodels pandas numpy openpyxl matplotlib
+"""
 from __future__ import annotations
 
+import re
 import time
 import warnings
 from dataclasses import dataclass, replace
@@ -12,13 +34,15 @@ from arch import arch_model
 
 warnings.filterwarnings("ignore")
 ANN = 252
-PATH_XLSX = "bases de dados\dados_teste.xlsx"
+PATH_XLSX = "bases de dados\economatica-3.xlsx"
 
 
-# CFG GARCH
+# ----------------------------------------------------------------------------
+# Configuração
+# ----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Config:
-    start: str = "01/01/1999"         # data inicial
+    start: str = "1999-01-01"         # início da amostra (evita hiperinflação do PETR4)
     vol_model: str = "gjr"            # "garch" | "gjr" | "ewma"
     garch_window: int = 756           # janela de estimação (~3 anos)
     refit_every: int = 21             # reestima e rebalanceia a cada ~1 mês
@@ -28,27 +52,65 @@ class Config:
     min_coverage: float = 0.80        # cobertura mínima para o ativo entrar no universo
     mom_lookbacks: tuple = (21, 63, 126, 252)
     target_vol: float = 0.10          # vol anual alvo da carteira
-    max_leverage: float = 1.0         # exposiçao bruta maxima
+    max_leverage: float = 1.0         # exposição bruta máxima
     long_only: bool = True            # False => permite vendido
     corr_halflife: int = 63
     corr_shrink: float = 0.2
     cost_bps: float = 5.0             # custo por unidade de turnover
-    cash_rate_anual: float = 0.0      # usado só se o cdi não for fornecido
+    cash_rate_anual: float = 0.0      # usado só se `cdi` não for fornecido
+    exclude: tuple = ()               # tickers a remover (ex.: classes duplicadas da mesma empresa)
 
 
-
+# ----------------------------------------------------------------------------
 # 0) Carga e preparação dos dados
+# ----------------------------------------------------------------------------
+USD_TICKERS = {"FXI", "EWJ", "SPY", "USO", "VNQ", "EFA", "EEM", "TLT", "GLD", "CPER", "UUP", "FXE"}
+_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{1,9}$")
 
-def load_data(path: str = PATH_XLSX) -> pd.DataFrame:
-    raw = pd.read_excel(path, sheet_name=0, header=None)
-    header = raw.iloc[3].astype(str)
-    tickers = ["PETR4"] + [h.strip().split("\n")[-1] for h in header.iloc[2:]]
+
+def load_data(path: str = PATH_XLSX, sheet=0) -> pd.DataFrame:
+    """
+    Lê planilha Economatica (cabeçalho na linha 4). O ticker de cada coluna é a última linha
+    do cabeçalho; se a coluna não trouxer ticker (caso do dados_teste.xlsx, 1ª coluna), usa o
+    nome da aba. Mantém só colunas de preço de fechamento e resolve nomes duplicados.
+    """
+    xl = pd.ExcelFile(path)
+    sheet_name = xl.sheet_names[sheet] if isinstance(sheet, int) else sheet
+    raw = xl.parse(sheet_name, header=None)
+    header = raw.iloc[3].astype(str).tolist()[1:]
+
+    tickers, is_price = [], []
+    for h in header:
+        lines = [x.strip() for x in h.strip().split("\n") if x.strip()]
+        tickers.append(lines[-1] if lines and _TICKER_RE.match(lines[-1]) else str(sheet_name))
+        is_price.append("fechamento" in h.lower())
+
     df = raw.iloc[4:, :].copy()
     df.columns = ["Data"] + tickers
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
     df = df.dropna(subset=["Data"]).set_index("Data").sort_index()
     df = df.replace("-", np.nan).apply(pd.to_numeric, errors="coerce")
-    return df[~df.index.duplicated(keep="last")]
+    df = df[~df.index.duplicated(keep="last")]
+
+    # 1) se a planilha mistura campos (volume, etc.), fica só com fechamento
+    if any(is_price) and not all(is_price):
+        dropped = [t for t, ok in zip(tickers, is_price) if not ok]
+        print(f"[dados] colunas que não são fechamento removidas: {dropped}")
+        df = df.loc[:, is_price]
+
+    # 2) nomes duplicados: mantém a coluna com mais observações
+    cols = list(df.columns)
+    if len(set(cols)) < len(cols):
+        dups = sorted({c for c in cols if cols.count(c) > 1})
+        best = {}
+        for i, c in enumerate(cols):
+            n = int(df.iloc[:, i].notna().sum())
+            if c not in best or n > best[c][1]:
+                best[c] = (i, n)
+        keep = sorted(i for i, _ in best.values())
+        print(f"[dados] tickers duplicados {dups}: mantida a coluna de maior cobertura de cada um")
+        df = df.iloc[:, keep]
+    return df
 
 
 def select_assets(prices: pd.DataFrame, min_coverage: float) -> pd.DataFrame:
@@ -68,32 +130,34 @@ def select_assets(prices: pd.DataFrame, min_coverage: float) -> pd.DataFrame:
     return prices[keep]
 
 
-def prepare(prices: pd.DataFrame, cfg: Config, fx: pd.Series | None = None,
-            brl_assets: tuple = ("PETR4",)):
+def prepare(prices: pd.DataFrame, cfg: Config, fx: pd.Series | None = None):
     """Retorna preços (opcionalmente em BRL), retornos simples e log, e log-preço ffill."""
     prices = prices.loc[cfg.start:]
+    drop = [c for c in cfg.exclude if c in prices.columns]
+    if drop:
+        print(f"[universo] excluídos por configuração: {drop}")
+        prices = prices.drop(columns=drop)
     prices = select_assets(prices, cfg.min_coverage)
 
-    if fx is not None:
-        fx = fx.reindex(prices.index).ffill()
-        usd = [c for c in prices.columns if c not in brl_assets]
+    usd = [c for c in prices.columns if c in USD_TICKERS]
+    if usd and fx is not None:
         prices = prices.copy()
-        prices[usd] = prices[usd].mul(fx, axis=0)
-    else:
-        print("[aviso] sem série de câmbio: PETR4 em BRL e os demais em USD. "
-              "Passe `fx` (USD/BRL) para obter uma carteira em reais.")
+        prices[usd] = prices[usd].mul(fx.reindex(prices.index).ffill(), axis=0)
+    elif usd:
+        print(f"[aviso] ativos em USD ({usd}) sem série de câmbio: passe `fx` (USD/BRL) "
+              "para obter uma carteira em reais.")
 
     simple = pd.DataFrame(index=prices.index, columns=prices.columns, dtype=float)
-    for c in prices.columns:  # retorno entre observações validas do proprio ativo
+    for c in prices.columns:  # retorno entre observações válidas do próprio ativo
         simple[c] = prices[c].dropna().pct_change().reindex(prices.index)
     logr = np.log1p(simple)
-    logp = np.log(prices).ffill(limit=5)  # soh para o momentum (atravessa feriados)
+    logp = np.log(prices).ffill(limit=5)  # só para o momentum (atravessa feriados)
     return prices, simple, logr, logp
 
 
-
+# ----------------------------------------------------------------------------
 # 1) Previsão de volatilidade
-
+# ----------------------------------------------------------------------------
 def ewma_vol(r: pd.DataFrame, lam: float = 0.94) -> pd.DataFrame:
     """Vol diária EWMA (benchmark e fallback). Ignora NaN dos feriados."""
     out = {}
@@ -142,7 +206,9 @@ def build_vol_forecasts(logr: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     return out
 
 
+# ----------------------------------------------------------------------------
 # 2) Momentum ajustado à vol (t-stat), vários lookbacks
+# ----------------------------------------------------------------------------
 def momentum_tstat(logp: pd.DataFrame, sigma: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     scores = []
     for L in cfg.mom_lookbacks:
@@ -151,8 +217,9 @@ def momentum_tstat(logp: pd.DataFrame, sigma: pd.DataFrame, cfg: Config) -> pd.D
     return sum(scores) / len(scores)
 
 
-
-# 3) pesos: momentum = direção, vol = tamanho
+# ----------------------------------------------------------------------------
+# 3) Pesos: momentum = direção, vol = tamanho
+# ----------------------------------------------------------------------------
 def ewma_corr(win: pd.DataFrame, halflife: int, shrink: float) -> np.ndarray:
     n = len(win)
     w = 0.5 ** (np.arange(n)[::-1] / halflife)
@@ -198,7 +265,9 @@ def build_weights(logr, logp, sigma, cfg: Config, use_momentum: bool = True) -> 
     return W
 
 
+# ----------------------------------------------------------------------------
 # 4) Backtest (pesos em t valem a partir de t+1)
+# ----------------------------------------------------------------------------
 def cash_series(index: pd.DatetimeIndex, cfg: Config, cdi: pd.Series | None) -> pd.Series:
     if cdi is not None:
         return cdi.reindex(index).fillna(0.0)
@@ -214,9 +283,9 @@ def backtest(simple, W, cash, cfg: Config):
     return ret, turnover, Wd
 
 
-
+# ----------------------------------------------------------------------------
 # 5) Métricas e regressão
-
+# ----------------------------------------------------------------------------
 def metrics(ret, cash, target_vol=None, turnover=None) -> dict:
     c = cash.reindex(ret.index).fillna(0.0)
     ex = ret - c
@@ -243,9 +312,9 @@ def factor_regression(ret, cash, factors: pd.DataFrame):
     return res
 
 
-
+# ----------------------------------------------------------------------------
 # 6) Escolha de modelo/janela por QLIKE (walk-forward)
-
+# ----------------------------------------------------------------------------
 def qlike(rv: pd.DataFrame, fc_var: pd.DataFrame) -> float:
     rv, fc_var = rv.where(rv > 0), fc_var.where(fc_var > 0)
     ratio = rv / fc_var
@@ -264,11 +333,11 @@ def evaluate_vol_models(logr, cfg, models=("garch", "gjr", "ewma"), windows=(504
     return pd.DataFrame(rows).sort_values("qlike").reset_index(drop=True)
 
 
-
+# ----------------------------------------------------------------------------
 # 7) Execução
-
+# ----------------------------------------------------------------------------
 def run(prices_raw: pd.DataFrame, cfg: Config = Config(), fx=None, cdi=None,
-        factor_cols=("SPY",), plot_path: str | None = None):
+        factor_cols=("BOVA11", "SPY"), plot_path: str | None = None):
     prices, simple, logr, logp = prepare(prices_raw, cfg, fx)
     print(f"[universo] {list(prices.columns)} | {prices.index[0].date()} a {prices.index[-1].date()}")
 
@@ -293,7 +362,13 @@ def run(prices_raw: pd.DataFrame, cfg: Config = Config(), fx=None, cdi=None,
     print("\n" + table.round(4).to_string())
 
     print("\nRegressão da estratégia contra fatores:")
-    factor_regression(strat, cash, simple[list(factor_cols)])
+    fac = [c for c in factor_cols if c in simple.columns]
+    if fac:
+        F = simple[fac]
+    else:  # sem BOVA11/SPY na base: usa o mercado = média igual-ponderada do universo
+        print("(fator de risco: média igual-ponderada dos ativos do universo)")
+        F = simple.mean(axis=1).to_frame("Mercado_EW")
+    factor_regression(strat, cash, F)
 
     if plot_path:
         import matplotlib
@@ -315,7 +390,9 @@ if __name__ == "__main__":
     prices_raw = load_data(PATH_XLSX)
     cfg = Config(long_only=True, target_vol=0.10, max_leverage=1.0)
 
+    # fx  = pd.read_..."USDBRL"  # Series diária USD/BRL  -> carteira em reais
+    # cdi = pd.read_..."CDI"     # Series diária do retorno do CDI
+    # print(evaluate_vol_models(prepare(prices_raw, cfg)[2], cfg))  # escolher modelo/janela
+
     out = run(prices_raw, cfg, fx=None, cdi=None,
               plot_path="momentum_garch_resultado.png")
-
-
