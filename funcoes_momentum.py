@@ -104,14 +104,21 @@ def aplicar_custos(resultado, custo):
     return (1 + resultado['Retorno']) * (1 - custo * resultado['Turnover']) - 1
 
 
-def calcular_sharpe(retornos, pregoes_ano=252):
-    volatilidade = retornos.std(ddof=1)
-    if not np.isfinite(volatilidade) or volatilidade <= 1e-15:
+def calcular_sharpe(retornos, pregoes_ano=252, cdi=None):
+    if cdi is not None:
+        rf = cdi.reindex(retornos.index, method="ffill")
+        if rf.isna().any():
+            raise ValueError("CDI ausente em algumas datas")
+        excesso = retornos - rf
+    else:
+        excesso = retornos
+    vol = excesso.std(ddof=1)
+    if not np.isfinite(vol) or vol<= 1e-15:
         return np.nan
-    return retornos.mean() / volatilidade * np.sqrt(pregoes_ano)
+    return excesso.mean() / vol * np.sqrt(pregoes_ano)
 
 
-def calcular_metricas(resultado, custo=0.001, pregoes_ano=252):
+def calcular_metricas(resultado, custo=0.001, pregoes_ano=252, cdi=None):
     if resultado.empty or resultado[['Retorno', 'Turnover']].isna().any().any():
         raise ValueError('Resultado vazio ou com valores ausentes.')
     r = aplicar_custos(resultado, custo)
@@ -120,6 +127,6 @@ def calcular_metricas(resultado, custo=0.001, pregoes_ano=252):
     pico = patrimonio.cummax().clip(lower=1.0)
     return {'Retorno anual (%)': retorno_anual * 100,
             'Volatilidade (%)': r.std(ddof=1) * np.sqrt(pregoes_ano) * 100,
-            'Sharpe': calcular_sharpe(r, pregoes_ano),
+            'Sharpe': calcular_sharpe(r, pregoes_ano, cdi=cdi),
             'Max Drawdown (%)': (patrimonio / pico - 1).min() * 100,
             'Turnover anual': resultado['Turnover'].sum() * pregoes_ano / len(r)}
