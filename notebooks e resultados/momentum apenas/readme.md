@@ -1,6 +1,6 @@
 # Momentum — janelas, Top N e Deadband
 
-Este README documenta o notebook [`momentums.ipynb`](notebooks/momentum%20apenas/momentums.ipynb), que realiza backtests de estratégias de Momentum com diferentes janelas de formação, métodos de seleção de ações e custos de transação.
+Este README documenta o notebook [`momentums.ipynb`](notebooks/momentum%20apenas/momentums.ipynb), atualizado com janelas de Momentum, custos de transação e cálculo do Sharpe com CDI histórico na comparação principal das estratégias.
 
 **Escopo:** Momentum com pesos iguais; **GARCH ainda não implementado** neste notebook.
 
@@ -66,93 +66,110 @@ São **3 janelas × 5 regras de seleção = 15 combinações**.
 
 ## 3. Backtest, custos e métricas
 
-Os backtests utilizam retornos diários, com custos proporcionais ao turnover. O **turnover** é a soma dos valores absolutos das mudanças de pesos, sem divisão por dois. A primeira compra também gera custo; não há liquidação fictícia no final de cada período.
+Os backtests utilizam retornos diários, com custos proporcionais ao turnover. O **turnover** corresponde à soma das mudanças absolutas dos pesos, sem divisão por dois; a primeira compra também gera custo. Não há liquidação fictícia no fim de cada período.
 
 ```text
-Retorno líquido = (1 + Retorno bruto) × (1 − custo × Turnover) − 1
+Retorno líquido diário = (1 + retorno bruto diário) × (1 − custo × turnover diário) − 1
 ```
 
-Custos avaliados: **0%**, **0,10%** e **0,30%** do valor negociado. O cenário-base das tabelas de desempenho utiliza **0,10%**.
+Custos simulados: **0%**, **0,10%** e **0,30%** por valor negociado. O custo-base é **0,10%**.
 
 Métricas calculadas:
 
-- **Retorno anual (%):** retorno composto anualizado com 252 pregões/ano.
-- **Volatilidade (%):** desvio-padrão diário anualizado por `√252`.
-- **Sharpe:** retorno médio diário dividido pelo desvio-padrão diário, multiplicado por `√252`, com taxa livre de risco igual a zero.
-- **Max Drawdown (%):** maior queda em relação ao pico acumulado, incluindo patrimônio inicial igual a 1.
-- **Turnover anual:** soma do turnover diário anualizada por 252 pregões.
+- **Retorno anual (%):** retorno composto anualizado com 252 pregões por ano.
+- **Volatilidade anual (%):** desvio-padrão dos retornos diários líquidos multiplicado por `√252`.
+- **Sharpe:** excesso de retorno médio diário dividido pelo desvio-padrão do excesso diário, multiplicado por `√252`.
+- **Max Drawdown (%):** maior queda do patrimônio acumulado em relação ao pico anterior, incluindo o patrimônio inicial de 1.
+- **Turnover anual:** soma do turnover diário, anualizada para 252 pregões.
+
+### CDI no cálculo do Sharpe
+
+O notebook passou a consultar o **CDI diário**, série **SGS 12** da API do Banco Central, com dados solicitados de **01/12/2016 a 31/12/2021**. Os valores da série, informados em percentual diário, são divididos por 100 para obter taxas em formato decimal. O alinhamento aos retornos é feito por data, com preenchimento pelo último CDI disponível (`ffill`).
+
+```text
+Sharpe com CDI = média(retorno líquido diário − CDI diário)
+                 / desvio-padrão(retorno líquido diário − CDI diário) × √252
+```
+
+A função `calcular_sharpe(retornos, pregoes_ano=252, cdi=None)` aceita uma série de CDI opcional; quando não é informada, utiliza **taxa livre de risco zero**.
+
+**Distinção entre as saídas do notebook:**
+
+- **Tabela das 15 estratégias e matriz de Sharpe (seção 5):** `calcular_metricas(..., cdi=cdi_diario)`, portanto **Sharpe com CDI diário**.
+- **Sensibilidade aos custos (seção 5):** `calcular_metricas(...)` sem `cdi`, portanto **Sharpe com rf = 0**.
+- **Tabelas originais de treinamento e validação das cinco estratégias 12–1 (seção 6):** **Sharpe com rf = 0**.
 
 ## 4. Alterações em relação à versão anterior
 
-O notebook anterior avaliava a janela **12–1** com as cinco regras Top 5, Top 10, Top 15, Deadband 7 e Deadband 10.
+A versão inicial avaliava apenas o Momentum **12–1**, com Top 5, Top 10, Top 15, Deadband 7 e Deadband 10. A versão atual inclui:
 
-A versão atual acrescenta:
+1. Janelas de Momentum **6–1**, **9–1** e **12–1** e comparação de **15 combinações**.
+2. Dicionários `momentums`, `carteiras_grid`, `pesos_grid` e `resultados_grid`.
+3. Tabela de métricas de treinamento `tabela_grid_treino` e matriz `matriz_sharpe`.
+4. Tabela `tabela_robustez` com Sharpes para três custos de negociação.
+5. Consulta ao **CDI diário histórico** do Banco Central e argumentos opcionais `cdi` em `calcular_sharpe` e `calcular_metricas`.
+6. Aplicação do **Sharpe com CDI** à tabela principal das 15 combinações. As tabelas de custos e de validação anteriores permanecem com `rf = 0`.
+7. Célula auxiliar destinada à extração das funções para `funcoes_momentum.py`, sujeita à disponibilidade do caminho local do notebook.
 
-1. Indicadores para as janelas **6–1** e **9–1**, mantendo **12–1**.
-2. Geração das **15 carteiras** no dicionário `carteiras_grid`.
-3. Geração dos pesos correspondentes em `pesos_grid`.
-4. Execução dos backtests em `resultados_grid`.
-5. Consolidação das métricas de 2017–2020 em `tabela_grid_treino`.
-6. Matriz de Sharpe por janela e seleção em `matriz_sharpe`.
-7. Comparação do Sharpe sob três custos em `tabela_robustez`.
-
-Permanecem no notebook as tabelas e os gráficos de patrimônio das cinco estratégias originais de **12–1**, separados entre treinamento e validação.
+Permanecem os gráficos de patrimônio e as tabelas das cinco estratégias originais 12–1, separadas entre treinamento e validação.
 
 ## 5. Resultados — treinamento (2017–2020)
 
-**Custo por valor negociado: 0,10%.** Resultados ordenados pelo Sharpe, conforme a tabela gerada no notebook.
+### Comparação das 15 combinações — custo 0,10%, Sharpe com CDI diário
+
+Valores registrados na saída de `tabela_grid_treino` do notebook atualizado, ordenados pelo Sharpe com CDI. As demais métricas consideram os retornos líquidos dos custos.
 
 | Janela   | Seleção     |   Retorno anual (%) |   Volatilidade (%) |   Sharpe |   Max Drawdown (%) |   Turnover anual |
 |:---------|:------------|--------------------:|-------------------:|---------:|-------------------:|-----------------:|
-| 6-1      | Top 5       |              64.226 |             36.626 |    1.544 |            -56.746 |            9.141 |
-| 6-1      | Deadband 7  |              58.919 |             37.600 |    1.427 |            -56.173 |            7.465 |
-| 6-1      | Deadband 10 |              53.891 |             35.430 |    1.400 |            -51.292 |            5.616 |
-| 12-1     | Top 5       |              48.951 |             36.387 |    1.283 |            -51.292 |            6.034 |
-| 12-1     | Top 15      |              37.304 |             29.203 |    1.235 |            -44.064 |            3.767 |
-| 6-1      | Top 10      |              38.629 |             30.343 |    1.232 |            -47.599 |            6.870 |
-| 9-1      | Deadband 7  |              44.863 |             35.754 |    1.221 |            -51.292 |            4.882 |
-| 9-1      | Top 15      |              35.237 |             28.510 |    1.205 |            -42.800 |            4.357 |
-| 9-1      | Top 5       |              42.781 |             35.108 |    1.195 |            -51.292 |            6.722 |
-| 6-1      | Top 15      |              34.177 |             29.214 |    1.156 |            -47.668 |            5.353 |
-| 12-1     | Deadband 7  |              41.730 |             36.424 |    1.145 |            -51.292 |            4.674 |
-| 12-1     | Top 10      |              37.752 |             32.894 |    1.143 |            -48.355 |            4.733 |
-| 9-1      | Deadband 10 |              37.775 |             36.111 |    1.074 |            -51.870 |            3.946 |
-| 9-1      | Top 10      |              32.054 |             32.042 |    1.033 |            -50.273 |            5.995 |
-| 12-1     | Deadband 10 |              38.059 |             39.170 |    1.026 |            -58.732 |            3.581 |
+| 6-1      | Top 5       |              64.226 |             36.626 |    1.378 |            -56.746 |            9.141 |
+| 6-1      | Deadband 7  |              58.919 |             37.600 |    1.265 |            -56.173 |            7.465 |
+| 6-1      | Deadband 10 |              53.891 |             35.430 |    1.228 |            -51.292 |            5.616 |
+| 12-1     | Top 5       |              48.951 |             36.387 |    1.115 |            -51.292 |            6.034 |
+| 9-1      | Deadband 7  |              44.863 |             35.754 |    1.051 |            -51.292 |            4.882 |
+| 6-1      | Top 10      |              38.629 |             30.343 |    1.032 |            -47.599 |            6.870 |
+| 12-1     | Top 15      |              37.304 |             29.203 |    1.027 |            -44.064 |            3.767 |
+| 9-1      | Top 5       |              42.781 |             35.108 |    1.022 |            -51.292 |            6.722 |
+| 9-1      | Top 15      |              35.237 |             28.510 |    0.991 |            -42.800 |            4.357 |
+| 12-1     | Deadband 7  |              41.730 |             36.424 |    0.978 |            -51.292 |            4.674 |
+| 12-1     | Top 10      |              37.752 |             32.894 |    0.958 |            -48.355 |            4.733 |
+| 6-1      | Top 15      |              34.177 |             29.214 |    0.948 |            -47.668 |            5.353 |
+| 9-1      | Deadband 10 |              37.775 |             36.111 |    0.905 |            -51.870 |            3.946 |
+| 12-1     | Deadband 10 |              38.059 |             39.170 |    0.870 |            -58.732 |            3.581 |
+| 9-1      | Top 10      |              32.054 |             32.042 |    0.843 |            -50.273 |            5.995 |
 
-### Matriz de Sharpe — treinamento (2017–2020)
+### Matriz de Sharpe com CDI diário — treinamento (2017–2020)
 
 | Janela   |   Top 5 |   Top 10 |   Top 15 |   Deadband 7 |   Deadband 10 |
 |:---------|--------:|---------:|---------:|-------------:|--------------:|
-| 6-1      |   1.544 |    1.232 |    1.156 |        1.427 |         1.400 |
-| 9-1      |   1.195 |    1.033 |    1.205 |        1.221 |         1.074 |
-| 12-1     |   1.283 |    1.143 |    1.235 |        1.145 |         1.026 |
+| 6-1      |   1.378 |    1.032 |    0.948 |        1.265 |         1.228 |
+| 9-1      |   1.022 |    0.843 |    0.991 |        1.051 |         0.905 |
+| 12-1     |   1.115 |    0.958 |    1.027 |        0.978 |         0.870 |
 
-### Sensibilidade do Sharpe aos custos — treinamento (2017–2020)
+### Sensibilidade do Sharpe aos custos — treinamento (2017–2020), rf = 0
 
-A coluna `Queda Sharpe` corresponde à diferença entre o Sharpe sem custos e o Sharpe com custo de 0,30%.
+Nesta tabela específica, o código utiliza `calcular_metricas(treino, custo=custo_valor)` sem passar o CDI.
 
-| Janela   | Seleção     |   Sharpe 0% |   Sharpe 0,10% |   Sharpe 0,30% |   Queda Sharpe |
-|:---------|:------------|------------:|---------------:|---------------:|---------------:|
-| 6-1      | Top 5       |       1.569 |          1.544 |          1.494 |          0.075 |
-| 6-1      | Deadband 7  |       1.446 |          1.427 |          1.387 |          0.059 |
-| 6-1      | Deadband 10 |       1.415 |          1.400 |          1.368 |          0.048 |
-| 12-1     | Top 5       |       1.299 |          1.283 |          1.250 |          0.049 |
-| 12-1     | Top 15      |       1.248 |          1.235 |          1.210 |          0.038 |
-| 6-1      | Top 10      |       1.255 |          1.232 |          1.187 |          0.067 |
-| 9-1      | Deadband 7  |       1.235 |          1.221 |          1.193 |          0.041 |
-| 9-1      | Top 15      |       1.220 |          1.205 |          1.175 |          0.045 |
-| 9-1      | Top 5       |       1.214 |          1.195 |          1.157 |          0.057 |
-| 6-1      | Top 15      |       1.175 |          1.156 |          1.120 |          0.055 |
-| 12-1     | Deadband 7  |       1.158 |          1.145 |          1.120 |          0.038 |
-| 12-1     | Top 10      |       1.157 |          1.143 |          1.114 |          0.043 |
-| 9-1      | Deadband 10 |       1.085 |          1.074 |          1.052 |          0.033 |
-| 9-1      | Top 10      |       1.051 |          1.033 |          0.995 |          0.056 |
-| 12-1     | Deadband 10 |       1.035 |          1.026 |          1.008 |          0.027 |
+| Estratégia         |   Sharpe 0% |   Sharpe 0,10% |   Sharpe 0,30% |
+|:-------------------|------------:|---------------:|---------------:|
+| 6-1 | Top 5        |       1.569 |          1.544 |          1.494 |
+| 6-1 | Top 10       |       1.255 |          1.232 |          1.187 |
+| 6-1 | Top 15       |       1.175 |          1.156 |          1.120 |
+| 6-1 | Deadband 7   |       1.446 |          1.427 |          1.387 |
+| 6-1 | Deadband 10  |       1.415 |          1.400 |          1.368 |
+| 9-1 | Top 5        |       1.214 |          1.195 |          1.157 |
+| 9-1 | Top 10       |       1.051 |          1.033 |          0.995 |
+| 9-1 | Top 15       |       1.220 |          1.205 |          1.175 |
+| 9-1 | Deadband 7   |       1.235 |          1.221 |          1.193 |
+| 9-1 | Deadband 10  |       1.085 |          1.074 |          1.052 |
+| 12-1 | Top 5       |       1.299 |          1.283 |          1.250 |
+| 12-1 | Top 10      |       1.157 |          1.143 |          1.114 |
+| 12-1 | Top 15      |       1.248 |          1.235 |          1.210 |
+| 12-1 | Deadband 7  |       1.158 |          1.145 |          1.120 |
+| 12-1 | Deadband 10 |       1.035 |          1.026 |          1.008 |
 
 ## 6. Resultados — validação (2021)
 
-A versão original do bloco de avaliação por período calcula os resultados em 2021 **para as cinco estratégias 12–1**. A tabela abaixo corresponde a esse bloco, com custo de 0,10%, e não à comparação das 15 combinações.
+A versão original do bloco de avaliação por período calcula os resultados em 2021 **para as cinco estratégias 12–1**. A tabela abaixo corresponde a esse bloco, com custo de 0,10% e **Sharpe com rf = 0**, e não à comparação das 15 combinações.
 
 | Seleção     |   Retorno anual (%) |   Volatilidade (%) |   Sharpe |   Max Drawdown (%) |   Turnover anual |
 |:------------|--------------------:|-------------------:|---------:|-------------------:|-----------------:|
@@ -167,32 +184,38 @@ A versão original do bloco de avaliação por período calcula os resultados em
 | Função | Operação |
 |:--|:--|
 | `preparar_precos` | Limpeza e validação da base de preços |
-| `criar_top_n` | Geração de carteiras com as maiores pontuações de Momentum |
-| `criar_deadband` | Geração de carteiras com faixa de permanência |
-| `criar_pesos` | Conversão das carteiras em pesos iguais |
-| `backtest` | Simulação diária, execução defasada das ordens e turnover |
-| `aplicar_custos` | Aplicação do custo proporcional ao turnover |
-| `calcular_sharpe` | Sharpe anualizado |
-| `calcular_metricas` | Consolidação de retorno, volatilidade, Sharpe, drawdown e turnover |
+| `criar_top_n` | Seleção das maiores pontuações de Momentum |
+| `criar_deadband` | Seleção com faixa de permanência no ranking |
+| `criar_pesos` | Conversão das seleções em pesos iguais |
+| `backtest` | Simulação diária, execução defasada e registro do turnover |
+| `aplicar_custos` | Desconto proporcional dos custos de transação |
+| `calcular_sharpe` | Sharpe anualizado, com CDI opcional |
+| `calcular_metricas` | Retorno, volatilidade, Sharpe, drawdown e turnover |
 
-As funções estão definidas diretamente no notebook. O código atual não depende de um módulo externo `funcoes_momentum.py`.
+O notebook inclui uma célula auxiliar para exportar essas funções para `funcoes_momentum.py`. A execução salva dessa célula terminou com `FileNotFoundError` ao localizar o notebook pela estrutura de pastas definida nela; o arquivo `.py` não é uma dependência das demais análises do notebook.
 
-## 8. Execução
+## 8. Execução e dependências
 
-Dependências principais: **Python, Jupyter, pandas, numpy, matplotlib, openpyxl e IPython**.
+Dependências: **Python, Jupyter, pandas, numpy, matplotlib, openpyxl, IPython e requests**.
 
 ```bash
-pip install pandas numpy matplotlib openpyxl ipython notebook tabulate
+pip install pandas numpy matplotlib openpyxl ipython notebook requests
 ```
 
 1. Abrir `notebooks/momentum apenas/momentums.ipynb`.
-2. Ajustar a variável `ARQUIVO_PRECOS` para a localização da planilha no computador.
-3. Executar as células na ordem em que aparecem.
+2. Ajustar `ARQUIVO_PRECOS` para o caminho local de `economatica-3.xlsx`.
+3. Executar as células de importação, consulta ao CDI, funções, leitura dos preços e análise na ordem apresentada. A consulta à API do Banco Central requer acesso à internet.
+4. A célula opcional de exportação de funções depende da localização do notebook e não é necessária para os backtests.
 
-### Observações de implementação
+### Limitações registradas no notebook
 
-- O código não implementa GARCH ou ponderação pela volatilidade prevista.
-- Não há filtro de liquidez, simulação de impacto de mercado, impostos ou tratamento de deslistagem.
-- O notebook não verifica, por si só, ajustes corporativos dos preços nem viés de sobrevivência da seleção de ativos.
-- Retornos ausentes de posições compradas geram erro, em vez de serem convertidos em zero.
-- A anualização utiliza 252 pregões por ano.
+- Não há implementação de GARCH nem ponderação por volatilidade prevista.
+- Não há filtro de liquidez, modelagem de impacto de mercado, impostos ou tratamento de deslistagem.
+- O código não audita ajustes corporativos nem viés de sobrevivência dos ativos.
+- Retornos ausentes nas posições compradas geram erro em vez de serem substituídos por zero.
+- As métricas são anualizadas usando 252 pregões por ano.
+- A base de preços cobre somente o intervalo **2015–2021** para estes cálculos.
+
+### Origem das tabelas
+
+Os resultados **com CDI** foram transcritos das saídas salvas em `momentums(2).ipynb`. Os resultados de **sensibilidade aos custos com `rf = 0`** foram também conferidos por execução do código com a planilha `economatica-3.xlsx`. O CDI histórico integral é obtido pela API do Banco Central durante a execução do notebook e não está embutido como série completa no arquivo `.ipynb`.
