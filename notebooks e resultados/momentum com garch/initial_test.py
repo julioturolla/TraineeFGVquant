@@ -282,7 +282,7 @@ def prever_vol(retornos, datas, specs, horizonte=21, min_obs_ativo=252, workers=
 # 3) Pesos: iguais (notebook) vs inverso da vol prevista (GARCH)
 # ----------------------------------------------------------------------------
 def criar_pesos_vol(carteira, sigma, universo):
-    """Mesmos ativos de `carteira`, com peso ∝ 1/σ̂ (soma 1). Se algum σ̂ faltar, usa a mediana
+    """Mesmos ativos de `carteira`, com peso ∝ 1/σ̂ (som a 1). Se algum σ̂ faltar, usa a mediana
     dos σ̂ disponíveis da carteira (ou pesos iguais se nenhum existir)."""
     pesos = pd.DataFrame(0.0, index=carteira.index, columns=universo)
     n_faltas = 0
