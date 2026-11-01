@@ -125,7 +125,7 @@ def load_data(path, sheet=0) -> pd.DataFrame:
     return df
 
 
-def baixar_cdi(inicio: str, fim: str, cache: str = "cdi_sgs12.csv") -> pd.Series | None:
+def baixar_cdi(inicio: str, fim: str, cache: str = "bases de dados/cdi_sgs12.csv") -> pd.Series | None:
     """CDI diário (SGS 12 do BCB, em fração ao dia), como no notebook. Usa cache local;
     devolve None (com aviso) se não houver internet nem cache."""
     ini = pd.Timestamp(inicio) - pd.Timedelta(days=45)
@@ -234,7 +234,7 @@ def _worker(args):
 
 
 def prever_vol(retornos, datas, specs, horizonte=21, min_obs_ativo=252, workers=None,
-               cache_path="cache_vol_mensal.pkl"):
+               cache_path="notebooks e resultados\momentum com garch\cache_vol_mensal.pkl"):
     """Vol diária prevista (média do horizonte) nas `datas`, para cada especificação em `specs`
     (lista de (modelo, parâmetro): ('gjr', 756), ('garch', 504), ('ewma', 0.94)).
     Retorna ({spec: DataFrame[datas x ativos]}, {spec: nº de fallbacks p/ EWMA}).
@@ -381,4 +381,4 @@ def run(path=None, janela="12-1", vol=("gjr", 756), cdi="auto", exclude=(),
 if __name__ == "__main__":
     # Planilha: procura 'bases de dados/economatica-3.xlsx' nas pastas acima (como no notebook).
     # Ou passe o caminho:  run(path=r"bases de dados\economatica-3.xlsx")
-    out = run(janela="12-1", vol=("gjr", 756), plot_path="momentum_garch_resultado.png")
+    out = run(janela="12-1", vol=("gjr", 756), plot_path="notebooks e resultados\momentum com garch\momentum_garch_resultado.png")
