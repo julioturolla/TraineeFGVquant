@@ -1,45 +1,9 @@
 #import "@preview/charged-ieee:0.1.4": ieee
 
-#let ativos = (
-  // Financeiro
-  ("B3", "B3SA3", "Financeiro"),
-  ("Banco do Brasil", "BBAS3", "Financeiro"),
-  ("Bradesco", "BBDC4", "Financeiro"),
-  ("Itaú Unibanco", "ITUB4", "Financeiro"),
-  ("Multiplan", "MULT3", "Financeiro"),
-  ("Santander Brasil (ON)", "SANB3", "Financeiro"),
-  ("Santander Brasil (unit)", "SANB11", "Financeiro"),
-  // Materiais básicos
-  ("Braskem", "BRKM5", "Materiais básicos"),
-  ("CSN", "CSNA3", "Materiais básicos"),
-  ("Gerdau", "GGBR4", "Materiais básicos"),
-  ("Klabin (ON)", "KLBN3", "Materiais básicos"),
-  ("Klabin (unit)", "KLBN11", "Materiais básicos"),
-  ("Metalúrgica Gerdau", "GOAU4", "Materiais básicos"),
-  ("Usiminas", "USIM5", "Materiais básicos"),
-  ("Vale", "VALE3", "Materiais básicos"),
-  // Petróleo, gás e biocombustíveis
-  ("Petrobras", "PETR4", "Petróleo, gás e biocombustíveis"),
-  ("PRIO", "PRIO3", "Petróleo, gás e biocombustíveis"),
-  // Utilidade pública
-  ("Cemig", "CMIG4", "Utilidade pública"),
-  ("Engie Brasil Energia", "EGIE3", "Utilidade pública"),
-  ("Equatorial", "EQTL3", "Utilidade pública"),
-  ("Taesa", "TAEE11", "Utilidade pública"),
-  // Consumo cíclico
-  ("Cyrela", "CYRE3", "Consumo cíclico"),
-  ("Localiza", "RENT3", "Consumo cíclico"),
-  ("Magazine Luiza", "MGLU3", "Consumo cíclico"),
-  ("MRV Engenharia", "MRVE3", "Consumo cíclico"),
-  // Consumo não cíclico
-  ("Ambev", "ABEV3", "Consumo não cíclico"),
-  ("Camil Alimentos", "CAML3", "Consumo não cíclico"),
-  // Bens industriais
-  ("Embraer", "EMBJ3", "Bens industriais"),
-  ("WEG", "WEGE3", "Bens industriais"),
-  // Saúde
-  ("Raia Drogasil", "RADL3", "Saúde"),
-)
+#set text(lang: "pt")
+#show "TABLE": "TABELA"
+#show "Abstract": "Resumo"
+#show "Index Terms": "Palavras-chave"
 
 #show: ieee.with(
   title: [Seleção por momentum e ponderação por previsões GARCH no mercado acionário brasileiro],
@@ -115,13 +79,6 @@ em que $r_(i,d)$ é o retorno simples do ativo $i$ no dia $d$ e os pesos $w_(i,d
 A implementação parte de preços de fechamento diários, ajustados por proventos e em moeda original, extraídos da Economatica para 30 ações negociadas na B3, de janeiro de 2015 a outubro de 2026. O universo distribui-se entre setores distintos, como bancos, commodities, energia elétrica, consumo, construção e indústria, o que reduz o risco de que o sinal reflita a dinâmica de um único setor. O ajuste por proventos é necessário porque pagamentos de dividendos reduzem o preço de tela sem representar perda ao acionista; a série ajustada preserva o retorno total entre duas datas, que é a grandeza relevante para o backtest.
 
 A composição do universo exige dois cuidados. O primeiro é a presença de duas classes de ações de um mesmo emissor em dois casos, Klabin (KLBN3 e KLBN11) e Santander (SANB3 e SANB11), cujos retornos são altamente correlacionados, de modo que o número de emissores distintos é 28. O segundo é mais sensível: a lista de ativos foi definida com base na relevância atual das empresas. Esse critério incorpora informação sobre sobrevivência que não estaria disponível no início da amostra, pois empresas que perderam relevância ou deixaram de ser negociadas ao longo do período não fazem parte do universo. É uma forma de forward bias na construção do universo investível, que tende a favorecer estratégias compradas e deve ser considerada na leitura dos resultados.
-
-
-    [Saturn], [1,433.5],
-    [Uranus], [2,872.5],
-    [Neptune], [4,495.1],
-  )
-) <tab:ativos>
 
 == Tratamento dos preços e retornos
 
@@ -218,9 +175,205 @@ Todas as medidas de Sharpe são calculadas sobre o CDI, o que garante comparabil
 
 == Implementação
 
-A implementação está organizada em três módulos complementares. O primeiro reúne as regras comuns a todas as variantes: preparação da base, seleção por Top $N$ e deadband, backtest com pesos que evoluem entre rebalanceamentos, custos e métricas. O segundo acrescenta a leitura da base, a obtenção do CDI, a estimação dos modelos de volatilidade nas datas de sinal e a ponderação pelo inverso da volatilidade prevista. O terceiro executa a grade de configurações, seleciona a melhor de cada família no treino e reporta seu desempenho na validação e a qualidade das previsões. Um script separado conduz os testes de heterocedasticidade da seção 4.2. Como todas as etapas compartilham o mesmo conjunto de funções, as variantes diferem apenas no componente de interesse.
+A implementação está organizada em três módulos complementares. O primeiro reúne as regras comuns a todas as variantes: preparação da base, seleção por Top $N$ e deadband, backtest com p  esos que evoluem entre rebalanceamentos, custos e métricas. O segundo acrescenta a leitura da base, a obtenção do CDI, a estimação dos modelos de volatilidade nas datas de sinal e a ponderação pelo inverso da volatilidade prevista. O terceiro executa a grade de configurações, seleciona a melhor de cada família no treino e reporta seu desempenho na validação e a qualidade das previsões. Um script separado conduz os testes de heterocedasticidade da seção 4.2. Como todas as etapas compartilham o mesmo conjunto de funções, as variantes diferem apenas no componente de interesse.
 
 // ------------------------------------------------------------------ 6
 = Considerações finais
 
 O desenho apresentado define uma estratégia de duas camadas, com seleção por momentum e dimensionamento por volatilidade condicional, e um protocolo de avaliação que separa escolha, validação e teste. A próxima etapa consiste em reportar os indicadores da grade no treino e na validação, fixar a configuração final e aplicá-la ao período de 2022 a 2026, acompanhando a sensibilidade dos resultados aos custos de transação. A interpretação dos resultados deverá considerar as restrições discutidas ao longo do texto: o viés de sobrevivência na composição do universo, a presença de classes de um mesmo emissor, o histórico curto para as janelas longas de estimação e a sensibilidade de amostras brasileiras a poucos episódios extremos.
+
+= Apêndice
+
+== Tabela do universo de ativos
+A Tabela A1 lista os 30 ativos que compõem o universo da estratégia, com a empresa emissora, o setor, a data da primeira cotação disponível, o número de pregões com cotação e a volatilidade anualizada. A amostra cobre de 02/01/2015 a 21/10/2026, totalizando 2.930 pregões. A volatilidade é o desvio-padrão dos log-retornos diários entre 2015 e 2021, período utilizado nas decisões de modelagem, multiplicado por $sqrt(252)$. KLBN3 e KLBN11, assim como SANB3 e SANB11, são classes de ações de um mesmo emissor. A CAML3 inicia sua série em setembro de 2017, data de sua listagem, e a KLBN3 apresenta cerca de 5% de pregões sem negociação, a maior proporção do universo.
+
+#let ativos = (
+  // Financeiro
+  ("B3", "B3SA3", "Financeiro"),
+  ("Banco do Brasil", "BBAS3", "Financeiro"),
+  ("Bradesco", "BBDC4", "Financeiro"),
+  ("Itaú Unibanco", "ITUB4", "Financeiro"),
+  ("Multiplan", "MULT3", "Financeiro"),
+  ("Santander Brasil (ON)", "SANB3", "Financeiro"),
+  ("Santander Brasil (unit)", "SANB11", "Financeiro"),
+  // Materiais básicos
+  ("Braskem", "BRKM5", "Materiais básicos"),
+  ("CSN", "CSNA3", "Materiais básicos"),
+  ("Gerdau", "GGBR4", "Materiais básicos"),
+  ("Klabin (ON)", "KLBN3", "Materiais básicos"),
+  ("Klabin (unit)", "KLBN11", "Materiais básicos"),
+  ("Metalúrgica Gerdau", "GOAU4", "Materiais básicos"),
+  ("Usiminas", "USIM5", "Materiais básicos"),
+  ("Vale", "VALE3", "Materiais básicos"),
+  // Petróleo, gás e biocombustíveis
+  ("Petrobras", "PETR4", "Petróleo, gás e biocombustíveis"),
+  ("PRIO", "PRIO3", "Petróleo, gás e biocombustíveis"),
+  // Utilidade pública
+  ("Cemig", "CMIG4", "Utilidade pública"),
+  ("Engie Brasil Energia", "EGIE3", "Utilidade pública"),
+  ("Equatorial", "EQTL3", "Utilidade pública"),
+  ("Taesa", "TAEE11", "Utilidade pública"),
+  // Consumo cíclico
+  ("Cyrela", "CYRE3", "Consumo cíclico"),
+  ("Localiza", "RENT3", "Consumo cíclico"),
+  ("Magazine Luiza", "MGLU3", "Consumo cíclico"),
+  ("MRV Engenharia", "MRVE3", "Consumo cíclico"),
+  // Consumo não cíclico
+  ("Ambev", "ABEV3", "Consumo não cíclico"),
+  ("Camil Alimentos", "CAML3", "Consumo não cíclico"),
+  // Bens industriais
+  ("Embraer", "EMBJ3", "Bens industriais"),
+  ("WEG", "WEGE3", "Bens industriais"),
+  // Saúde
+  ("Raia Drogasil", "RADL3", "Saúde"),
+)
+
+#show figure.where(kind: table): set block(breakable: true)
+#show figure.where(kind: table): set figure.caption(position: top)
+
+#figure(
+  table(
+    columns: (1fr, auto, 1.4fr),
+    align: (left, center, left),
+    inset: (x: 4pt, y: 2pt),
+    stroke: none,
+    table.hline(stroke: 1pt),
+    table.header(
+      repeat: true,
+      [*Empresa*], [*Ticker*], [*Setor*],
+    ),
+    table.hline(stroke: 0.5pt),
+    ..ativos.flatten().map(c => text(size: 7pt, c)),
+    table.hline(stroke: 1pt),
+  ),
+  caption: [Universo de ativos e classificação setorial],
+)
+
+#set par(first-line-indent: (amount: 1em, all: true))
+
+#show raw: set text(size: 7.5pt)
+#show raw.where(block: true): set block(above: 12pt, below: 12pt)
+
+== Código
+
+=== Sinal de Momentum
+
+Implementa a equação (2), da seção 4.1. O sinal é calculado para todos os pregões e, em seguida, apenas o último pregão de cada mês é mantido como data de formação.
+
+```python
+def calcular_momentum_mensal(precos, dias, skip=SKIP,
+inicio_bt=INICIO_BACKTEST, fim=FIM_DADOS):
+    indicador = precos.shift(skip) / precos.shift(dias) - 1
+    mensal = indicador.groupby(indicador.index.to_period("M")).tail(1)
+    return mensal.loc[inicio_bt:fim]
+```
+=== Seleção Top N e deadband
+
+Regras de seleção da seção 4.1. No deadband, os ativos já presentes na carteira são mantidos enquanto permanecerem entre as primeiras posições do ranking definidas pelo limite, e as vagas restantes são preenchidas pelos mais bem classificados.
+
+```python
+def criar_top_n(momentum_mensal, n):
+    if not isinstance(n, int) or n < 1:
+        raise ValueError('n deve ser inteiro positivo.')
+    historico = {}
+    for data, linha in momentum_mensal.iterrows():
+        ranking = linha.dropna().sort_values(ascending=False,
+kind='stable')
+        if len(ranking) >= n:
+            historico[data] = ranking.head(n).index.tolist()
+    return pd.DataFrame.from_dict(historico, orient='index',
+                                  columns=[f'Ativo {i}' for i in
+range(1, n + 1)])
+
+def criar_deadband(momentum_mensal, limite, n=5):
+    if not isinstance(n, int) or not isinstance(limite, int) or n < 1
+or limite < n:
+        raise ValueError('Use limite inteiro >= n >= 1.')
+    carteira, historico = [], {}
+    for data, linha in momentum_mensal.iterrows():
+        ranking = linha.dropna().sort_values(ascending=False,
+kind='stable')
+        if len(ranking) < n:
+            continue
+        permitidos = ranking.head(limite).index
+        carteira = [ativo for ativo in carteira if ativo in
+permitidos]
+        for ativo in ranking.index:
+            if len(carteira) == n:
+                break
+            if ativo not in carteira:
+                carteira.append(ativo)
+        historico[data] = carteira.copy()
+    return pd.DataFrame.from_dict(historico, orient='index',
+                                  columns=[f'Ativo {i}' for i in
+range(1, n + 1)])
+```
+
+=== Previsão de Volatilidade
+
+Implementa as equações (3) e (4), da seção 4.3, e a equação (5), da seção 4.4. O modelo é estimado com log-retornos em pontos percentuais, média zero e inovações t de Student; a previsão retornada é a raiz da variância média prevista para os 21 pregões seguintes. Em caso de não convergência, a função retorna valor ausente e a previsão de reserva por EWMA é utilizada.
+
+```python
+def garch_forecast(x: pd.Series, model: str, horizon: int, min_obs:
+int) -> float:
+    x = x.dropna() * 100
+    if len(x) < min_obs:
+        return np.nan
+    try:
+        am = arch_model(x, mean="Zero", vol="GARCH", p=1, o=1 if model
+== "gjr" else 0, q=1,
+                        dist="t", rescale=False)
+        res = am.fit(disp="off", show_warning=False)
+        if res.convergence_flag != 0:
+            return np.nan
+        var_path = res.forecast(horizon=horizon,
+reindex=False).variance.values[-1]
+        return float(np.sqrt(var_path.mean()) / 100)
+    except Exception:
+
+return `np.nan` ```
+
+=== Ponderação pelo inverso da volatilidade prevista
+
+Implementa a equação (6), da seção 4.5. Os ativos são os mesmos da seleção com pesos iguais; apenas os pesos mudam.
+
+```python
+def criar_pesos_vol(carteira, sigma, universo):
+    pesos = pd.DataFrame(0.0, index=carteira.index, columns=universo)
+    n_faltas = 0
+    for data, linha in carteira.iterrows():
+        ativos = linha.dropna().tolist()
+        if not ativos or len(set(ativos)) != len(ativos):
+            raise ValueError(f"Carteira vazia ou com duplicatas em {data}.")
+        s = sigma.loc[data, ativos].astype(float).where(lambda x: x > 0)
+        if s.isna().any():
+            n_faltas += int(s.isna().sum())
+            s = s.fillna(s.median() if s.notna().any() else 1.0)
+        w = 1.0 / s
+        pesos.loc[data, ativos] = (w / w.sum()).values
+    if n_faltas:
+        print(f"[pesos] {n_faltas} σ^ ausentes substituídos pela mediana da carteira")
+    return pesos
+```
+
+=== Backtest, custos e índide de sharpe
+
+Implementa a equação (1), da seção 2, as equações (7) e (8), da seção 5.2, e a equação (9), da seção 5.4. A ordem gerada no último pregão do mês é executada no pregão seguinte (deslocamento de um pregão em `ordens`), conforme a seção 5.1. Entre execuções, os pesos evoluem com os retornos dos ativos, e o turnover é registrado no dia da ordem.
+
+```python
+def backtest(pesos_alvo, retornos, inicio, fim):
+    r_periodo = retornos.loc[inicio:fim]
+    if r_periodo.empty or not retornos.index.is_monotonic_increasing or retornos.index.has_duplicates:
+        raise ValueError('Retornos vazios ou datas fora de ordem/duplicadas.')
+    if not pesos_alvo.columns.equals(retornos.columns):
+        raise ValueError('Colunas dos pesos e retornos devem coincidir.')
+    if pesos_alvo.index.has_duplicates or not pesos_alvo.index.isin(r_periodo.index).all():
+        raise ValueError('Sinais duplicados ou fora dos pregões do backtest.')
+    if (not np.isfinite(pesos_alvo.to_numpy()).all() or (pesos_alvo < 0).any().any()
+            or not np.allclose(pesos_alvo.sum(axis=1), 1)):
+        raise ValueError('Pesos devem ser finitos, não negativos e somar um.')
+    ordens = pesos_alvo.reindex(r_periodo.index).shift(1)
+    pesos_atuais = pd.Series(0.0, index=retornos.columns)
+    historico = []
+    for data, r in r_periodo.iterrows():
+        faltantes = r.index[(pesos_atuais > 0) & r.isna)].tolist()```
