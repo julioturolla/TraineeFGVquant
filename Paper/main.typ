@@ -15,7 +15,7 @@
       name: "Gabriel Hansen",
       department: [Trainee at FGV Quant],
       location: [São Paulo, Brazil],
-      email: "lukas.kall@fgv.br"
+      email: "gabriel.hansen2006@gmail.com"
     ),
     (
       name: "Júlio Turolla",
