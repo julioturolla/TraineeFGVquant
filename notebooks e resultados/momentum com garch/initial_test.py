@@ -71,20 +71,20 @@ def definir_periodos(fim_dados: str) -> dict:
 _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{1,9}$")
 
 
-def localizar_planilha(nome: str = "economatica-3.xlsx") -> Path:
-    """Procura 'bases de dados/<nome>' subindo pelas pastas (como no notebook)."""
-    p = Path.cwd().resolve()
-    while True:
-        if (p / "bases de dados" / nome).exists():
-            return p / "bases de dados" / nome
-        if p == p.parent:
-            break
-        p = p.parent
-    for c in (Path("/mnt/user-data/uploads") / nome, Path(nome)):
-        if c.exists():
-            return c
-    raise FileNotFoundError(f"{nome} não encontrado. Passe o caminho em `path=`.")
+def localizar_planilha(nome="economatica-3.xlsx") -> Path:
 
+    # Localizar a raiz do repositório
+    raiz = Path(__file__).resolve().parents[2]
+
+    # Caminho da planilha dentro do projeto
+    arquivo = raiz / "baseDeDados" / nome
+
+    if not arquivo.is_file():
+        raise FileNotFoundError(
+            f"Planilha não encontrada: {arquivo}"
+        )
+
+    return arquivo
 
 def load_data(path, sheet=0) -> pd.DataFrame:
     """Lê planilha Economatica (cabeçalho na linha 4); ticker = última linha do cabeçalho
