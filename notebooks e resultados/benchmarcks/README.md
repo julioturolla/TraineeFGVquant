@@ -1,170 +1,385 @@
-Comparação de benchmarks — Momentum 12–1 e GJR-GARCH
-Projeto: TraineeFGVquant
-Notebook analisado: comparacao_benchmarks.ipynb (versão atualizada enviada como comparacao_benchmarks(1).ipynb, com 17 células e saídas salvas)
-Períodos: treinamento em 2017–2020; validação em 2021; histórico prévio a partir de 2015 para formar sinais e estimar volatilidade. 2022–2026 não foi utilizado nesta comparação.
-Conclusão principal. No experimento de Momentum 12–1, Top 5, a ponderação pela volatilidade prevista por GJR-GARCH(756) reduziu a volatilidade realizada nos dois períodos, porém também diminuiu o retorno, o Sharpe descontado do CDI e o Information Ratio frente aos pesos iguais. O máximo drawdown melhorou no treinamento, mas não na validação, enquanto o turnover aumentou em ambos os períodos. Portanto, não há ganho consistente de eficiência ajustada ao risco com o GJR nesta configuração. Trata-se de evidência descritiva sobre uma aplicação do GJR à alocação; não é uma demonstração de que o modelo seja incapaz de prever volatilidade.
+# Comparação de benchmarks — Momentum 12–1 e GJR-GARCH
 
-1. Objetivo e desenho do experimento
-A pergunta central é: a utilização de volatilidade prevista por GJR-GARCH para definir o tamanho das posições melhora o desempenho de uma carteira selecionada por Momentum no mercado brasileiro?
+**Projeto:** [TraineeFGVquant](https://github.com/julioturolla/TraineeFGVquant)  
+**Notebook:** `comparacao_benchmarks.ipynb`  
+**Períodos:** treinamento de 2017 a 2020 e validação em 2021, com histórico a partir de 2015. O período de 2022–2026 permanece reservado para o teste final.
 
-O experimento distingue duas etapas:
-1. Seleção de ativos: escolher mensalmente as cinco ações com maior sinal de Momentum 12–1.
-2. Ponderação: distribuir o capital igualmente entre as ações selecionadas (pesos iguais) ou atribuir pesos inversamente proporcionais às previsões de volatilidade (GJR-GARCH).
-As duas estratégias utilizam a mesma seleção mensal de cinco ações. Essa estrutura permite examinar especificamente o efeito da regra de ponderação, em vez de misturá-lo com mudanças no critério de seleção. Além das duas versões de Momentum, o notebook compara uma carteira equiponderada do universo de 30 ações, quatro índices de ações e o CDI.
-2. Dados, formação das carteiras e premissas
-2.1. Bases e períodos
-- Ações: 30 papéis extraídos de baseDeDados/economatica-3.xlsx. Após o tratamento, o notebook registra preços de 02/01/2015 a 30/12/2021, com 1.730 datas de preços e 60 datas de sinal.
-- Índices de ações: IBOV (Ibovespa), IBXL (IBrX 50), SMLL (índice de small caps) e IDIV (índice de dividendos), exportados da Economatica. A execução registra retornos sem valores ausentes nas datas de comparação entre 2017 e 2021.
-- CDI: série diária SGS 12 do Banco Central, expressa em fração do retorno diário. A função baixar_cdi() de initial_test.py utilizou o cache local baseDeDados/cdi_sgs12.csv, recuperado de um commit histórico do próprio repositório. A saída registrada cobre 17/11/2016 a 31/12/2021. O alinhamento com o calendário de pregões utiliza preenchimento para frente (ffill).
-- Janelas: 2015–2016 dão histórico para a formação dos sinais; 2017–2020 é o treinamento; 2021 é a validação. O período 2022–2026 permanece fora deste estudo.
-2.2. Momentum e execução
-O sinal é o retorno acumulado de aproximadamente 12 meses até um mês antes da formação, excluindo o mês mais recente:
+## 1. Objetivo do estudo
+
+O objetivo desta análise é investigar se a utilização da volatilidade prevista por um modelo GJR-GARCH para determinar os pesos de uma carteira selecionada por Momentum melhora seu desempenho ajustado ao risco no mercado acionário brasileiro.
+
+A comparação central envolve duas estratégias que utilizam exatamente o mesmo critério de seleção de ativos:
+
+1. **Momentum 12–1 Top 5 com pesos iguais:** seleciona mensalmente as cinco ações de maior Momentum e distribui o capital igualmente entre elas.
+2. **Momentum 12–1 Top 5 com GJR-GARCH:** seleciona as mesmas cinco ações, mas determina os pesos de acordo com o inverso de suas volatilidades previstas.
+
+A metodologia permite isolar o efeito da ponderação por risco, mantendo constante a seleção das ações.
+
+Além dessas duas estratégias, são utilizados como benchmarks o Ibovespa (IBOV), o IBrX 50 (IBXL), o índice Small Cap (SMLL), o índice de Dividendos (IDIV), uma carteira equiponderada de 30 ações e o CDI.
+
+## 2. Dados e metodologia
+
+### 2.1. Base de dados
+
+Os dados de preços foram obtidos da Economatica, abrangendo um universo de 30 ações brasileiras.
+
+A amostra foi dividida em três etapas:
+
+| Período | Utilização |
+|---|---|
+| 2015–2016 | Histórico inicial para cálculo dos sinais e estimação da volatilidade |
+| 2017–2020 | Treinamento (*in-sample*) |
+| 2021 | Validação |
+| 2022–2026 | Teste final reservado (*out-of-sample*) |
+
+A divisão permite estudar o comportamento das estratégias em diferentes períodos, sem utilizar a amostra final na escolha dos parâmetros.
+
+### 2.2. Sinal de Momentum
+
+O sinal utilizado é o Momentum 12–1, que mede o retorno acumulado da ação aproximadamente nos últimos 12 meses, desconsiderando o mês mais recente.
+
+Sua fórmula é:
+
 \[
-M_{i,t}=\frac{P_{i,t-21}}{P_{i,t-252}}-1.
+M_{i,t}=\frac{P_{i,t-21}}{P_{i,t-252}}-1
 \]
-São selecionadas as cinco ações com maior sinal ao fim de cada mês. A ordem é executada no fechamento do próximo pregão e passa a afetar os retornos posteriores; os pesos variam com os preços entre os rebalanceamentos mensais.
 
-A versão Momentum Top 5 (pesos iguais) atribui 20% por ação na formação. A versão Momentum Top 5 + GJR usa as mesmas ações e define:
+Em que:
+
+- \(P_{i,t-21}\) representa o preço da ação 21 pregões antes da formação da carteira.
+- \(P_{i,t-252}\) representa o preço da ação 252 pregões antes da formação.
+
+A exclusão do último mês busca evitar a influência de movimentos de reversão de curtíssimo prazo sobre o sinal de Momentum.
+
+Mensalmente, são selecionadas as cinco ações com os maiores valores desse indicador.
+
+### 2.3. Ponderação por pesos iguais
+
+Na estratégia tradicional, cada uma das cinco ações selecionadas recebe 20% do capital no momento do rebalanceamento.
+
+A metodologia não utiliza informações sobre o risco individual de cada ação para determinar sua participação na carteira.
+
+Consequentemente, ações com volatilidades muito diferentes recebem inicialmente a mesma alocação de capital.
+
+### 2.4. Ponderação por GJR-GARCH
+
+A segunda estratégia utiliza previsões de volatilidade produzidas pelo modelo GJR-GARCH.
+
+O GJR-GARCH é uma extensão do GARCH tradicional que permite capturar assimetrias na volatilidade, reconhecendo que choques negativos e positivos podem produzir efeitos diferentes sobre a volatilidade futura.
+
+A configuração utilizada no notebook é `("gjr", 756)`, correspondente a uma janela de estimação de 756 pregões.
+
+A carteira utiliza pesos inversamente proporcionais às volatilidades previstas:
+
 \[
-w_{i,t}^{GJR}=\frac{1/\widehat\sigma_{i,t}}{\sum_{j\in\mathcal C_t}1/\widehat\sigma_{j,t}}.
+w_{i,t}=
+\frac{1/\widehat{\sigma}_{i,t}}
+{\sum_{j\in C_t}1/\widehat{\sigma}_{j,t}}
 \]
-A configuração solicitada ao código é ("gjr", 756): GJR-GARCH(1,1), janela de 756 pregões, com previsão de volatilidade para ponderar a carteira. O mecanismo de previsão do projeto utiliza distribuição Student-t, média condicional zero e horizonte de 21 pregões. A execução do notebook informa cache de volatilidade carregado (1/1) e zero fallbacks para EWMA. Isso comprova o uso do resultado armazenado, não uma nova reestimação independente do GJR nesta execução. As carteiras são compradas, sem alavancagem ou posições vendidas.
-2.3. Benchmarks e custos
-A Equiponderada 30 utiliza rebalanceamento mensal e admite ativos com 21 retornos diários consecutivos válidos na data de formação. O primeiro rebalanceamento possui 29 ações elegíveis; a quantidade chega a 30 em outubro de 2017. Essa carteira inicia em caixa até a primeira operação de fevereiro de 2017.
 
-Para as três carteiras implementadas (Momentum igual, Momentum GJR e Equiponderada 30), o custo é 0,10% do volume negociado (custo=0.001, multiplicado pelo turnover). O turnover contabiliza negociações associadas à alteração de pesos. Índices e CDI têm turnover igual a zero no notebook, ou seja, são benchmarks teóricos sem custos de replicação. A comparação não modela spread, slippage, impostos, taxas de administração nem impacto de mercado.
-2.4. Indicadores e CDI
-O notebook reporta retorno anualizado composto, volatilidade anualizada, máximo drawdown, turnover anual e índice de Sharpe com o CDI como taxa livre de risco. As métricas das carteiras utilizam retornos líquidos dos custos modelados.
+Em que \(\widehat{\sigma}_{i,t}\) representa a volatilidade prevista para a ação \(i\).
 
-A função original calcular_metricas(..., cdi=cdi_diario) chama calcular_sharpe(), que calcula:
+Portanto, ações com maior volatilidade prevista recebem pesos menores, enquanto ações com menor volatilidade prevista recebem pesos maiores.
+
+O objetivo dessa metodologia não é necessariamente maximizar o retorno bruto, mas melhorar a distribuição do risco entre os ativos selecionados.
+
+**É importante distinguir previsão de volatilidade e eficiência da alocação:** mesmo que um modelo estime adequadamente a volatilidade futura, isso não garante que utilizar suas previsões para definir os pesos produza maior Sharpe.
+
+### 2.5. Rebalanceamento e custos
+
+As carteiras são rebalanceadas mensalmente. As ordens decorrentes dos sinais são executadas no pregão seguinte, e os pesos evoluem conforme os retornos das ações entre os rebalanceamentos.
+
+As simulações consideram um custo de transação de **0,10% sobre o volume negociado**, calculado a partir do turnover.
+
+Os índices e o CDI são utilizados como benchmarks teóricos sem custos de replicação.
+
+### 2.6. Taxa livre de risco
+
+O CDI foi incorporado utilizando a série diária SGS 12 do Banco Central, já empregada em outros códigos do projeto.
+
+O Índice de Sharpe é calculado utilizando os retornos excedentes ao CDI:
+
 \[
-S_{CDI}=\frac{\overline{(r_{p,t}-r_{CDI,t})}}{\operatorname{sd}(r_{p,t}-r_{CDI,t})}\sqrt{252}.
+Sharpe =
+\frac{E[r_{p,t}-r_{CDI,t}]}
+{\sigma(r_{p,t}-r_{CDI,t})}
+\sqrt{252}
 \]
-Portanto, somente a coluna Sharpe muda quando se passa o CDI para calcular_metricas(); retorno, volatilidade, drawdown e turnover permanecem iguais. As tabelas mais antigas do notebook, calculadas com cdi=None, servem apenas como histórico da construção: as tabelas corretas para a interpretação final são aquelas intituladas “Sharpe com CDI”.
-3. Resultados finais — métricas com CDI
-As tabelas a seguir reproduzem as saídas da célula que criou tabelas_finais_cdi, após carregar o CDI. Todos os valores de retorno e volatilidade são anualizados; retornos e drawdowns estão em percentual.
-3.1. Treinamento — 2017 a 2020
-Estratégia	Retorno anual (%)	Volatilidade (%)	Sharpe com CDI	Max drawdown (%)	Turnover anual
-Momentum 12–1 Top 5, pesos iguais	48,951	36,387	1,115	−51,292	6,034
-Momentum 12–1 Top 5 + GJR	38,234	33,885	0,950	−45,915	7,101
-Equiponderada 30	31,130	27,973	0,894	−47,108	1,060
-SMLL	26,816	28,667	0,764	−51,693	0,000
-IDIV	20,655	25,399	0,629	−40,931	0,000
-IBOV	18,974	28,161	0,544	−46,816	0,000
-IBXL	18,474	28,677	0,525	−47,675	0,000
 
+Dessa maneira, o Sharpe representa a remuneração excedente à taxa livre de risco por unidade de volatilidade do retorno excedente.
 
-3.2. Validação — 2021
-Estratégia	Retorno anual (%)	Volatilidade (%)	Sharpe com CDI	Max drawdown (%)	Turnover anual
-Momentum 12–1 Top 5, pesos iguais	24,656	33,602	0,695	−23,028	5,746
-Momentum 12–1 Top 5 + GJR	22,197	33,244	0,639	−23,756	6,567
-Equiponderada 30	1,249	21,167	−0,040	−18,479	0,851
-IDIV	−6,538	19,059	−0,486	−15,993	0,000
-IBXL	−10,742	21,474	−0,623	−23,428	0,000
-IBOV	−12,153	20,987	−0,718	−22,941	0,000
-SMLL	−16,496	25,528	−0,747	−31,305	0,000
+A inclusão do CDI altera o Sharpe, mas não os retornos anualizados, a volatilidade total, o drawdown ou o turnover das estratégias.
 
+## 3. Resultados finais
 
-Atenção à sequência do notebook: essas tabelas foram calculadas antes de inserir o CDI em resultados_benchmarks. Por isso, contêm sete estratégias, embora o gráfico final contenha oito curvas, incluindo o CDI. Não há uma linha de retorno anualizado do CDI impressa nessas tabelas; o README não atribui ao CDI um retorno numérico que não foi reportado ali. Se o CDI for incluído em uma futura reexecução das tabelas, seu Sharpe em excesso a ele mesmo será indefinido (NaN), pois a variância do excesso é zero.
-4. Contribuição incremental do GJR-GARCH: comparação direta
-Esta é a comparação decisiva para a hipótese do trabalho, pois mantém o sinal Momentum 12–1, o conjunto Top 5 e a regra de negociação e muda a ponderação.
-Indicador	Pesos iguais 2017–2020	GJR 2017–2020	Efeito GJR	Pesos iguais 2021	GJR 2021	Efeito GJR
-Retorno anual (%)	48,951	38,234	−10,717 p.p.	24,656	22,197	−2,459 p.p.
-Volatilidade (%)	36,387	33,885	−2,502 p.p.	33,602	33,244	−0,358 p.p.
-Sharpe com CDI	1,115	0,950	−0,165	0,695	0,639	−0,056
-Max drawdown (%)	−51,292	−45,915	melhora 5,377 p.p.	−23,028	−23,756	piora 0,728 p.p.
-Turnover anual	6,034	7,101	+1,067	5,746	6,567	+0,821
+### 3.1. Treinamento — 2017 a 2020
 
+| Estratégia | Retorno anual (%) | Volatilidade (%) | Sharpe com CDI | Max Drawdown (%) | Turnover anual |
+|---|---:|---:|---:|---:|---:|
+| **Momentum 12–1 Top 5** | **48,951** | 36,387 | **1,115** | -51,292 | 6,034 |
+| **Momentum Top 5 + GJR** | 38,234 | 33,885 | 0,950 | -45,915 | 7,101 |
+| Equiponderada 30 | 31,130 | 27,973 | 0,894 | -47,108 | 1,060 |
+| SMLL | 26,816 | 28,667 | 0,764 | -51,693 | 0,000 |
+| IDIV | 20,655 | 25,399 | 0,629 | -40,931 | 0,000 |
+| IBOV | 18,974 | 28,161 | 0,544 | -46,816 | 0,000 |
+| IBXL | 18,474 | 28,677 | 0,525 | -47,675 | 0,000 |
 
-4.1. Redução da volatilidade: benefício real, mas insuficiente
-No treinamento, a volatilidade do Momentum caiu de 36,387% para 33,885% com o GJR, redução de 2,502 pontos percentuais (cerca de 6,9% em termos relativos). Na validação, caiu apenas 0,358 ponto percentual, de 33,602% para 33,244% (aproximadamente 1,1% em termos relativos).
+Durante o treinamento, ambas as estratégias Momentum apresentaram retornos e índices de Sharpe superiores aos benchmarks acionários.
 
-Essa evidência indica que a regra de pesos inversos à volatilidade conseguiu reduzir a volatilidade realizada da carteira em ambos os períodos. Não comprova, isoladamente, que as previsões GJR foram mais precisas que as de outros estimadores: essa pergunta exigiria comparar erro preditivo, por exemplo, via QLIKE ou contra volatilidade realizada.
-4.2. Retorno e Sharpe: a proteção teve custo econômico
-O retorno anualizado caiu 10,717 p.p. no treinamento e 2,459 p.p. em 2021. Mesmo descontando o CDI, a versão com pesos iguais continuou apresentando o maior Sharpe: 1,115 versus 0,950 no treinamento e 0,695 versus 0,639 em 2021.
+A estratégia Momentum com pesos iguais apresentou retorno anualizado de 48,95%, enquanto a estratégia ponderada pelo GJR-GARCH apresentou 38,23%.
 
-Assim, a diminuição da volatilidade não compensou a perda de retorno por unidade de risco excedente ao CDI. Isso é especialmente relevante porque a conclusão não depende de se usar Sharpe com taxa livre de risco zero: ela se mantém após incorporar o CDI histórico.
+A diferença de aproximadamente 10,72 pontos percentuais evidencia que a utilização do GJR reduziu consideravelmente o retorno da carteira.
 
-Uma possível explicação econômica — ainda não testada diretamente — é que a ponderação inversa à volatilidade reduz a participação justamente de algumas ações que combinam alto Momentum com alta volatilidade e retornos posteriores expressivos. Seria necessário examinar os pesos mensais, as contribuições por ativo e as covariâncias para testar tal mecanismo. Não se deve tratá-lo como causa já demonstrada.
-4.3. Drawdown e turnover: proteção não persistente, mais negociação
-Durante 2017–2020, o maior drawdown melhorou de −51,292% para −45,915%, uma proteção de 5,377 p.p.. Na validação de 2021, porém, o GJR teve drawdown ligeiramente pior (−23,756%, contra −23,028%). Portanto, a vantagem de proteção contra perdas extremas não foi estável entre as amostras.
+Por outro lado, a volatilidade anualizada diminuiu de 36,39% para 33,89%, indicando que a ponderação por risco conseguiu reduzir a exposição à volatilidade dos ativos selecionados.
 
-O turnover anual aumentou de 6,034 para 7,101 no treinamento (aproximadamente 17,7% a mais) e de 5,746 para 6,567 em 2021 (aproximadamente 14,3% a mais). Como a simulação aplica custo por volume transacionado, esse aumento penaliza a versão GJR e amplia sua sensibilidade a custos reais de execução. Os resultados apresentados já consideram o custo modelado de 0,10%; o notebook não isola quanto da perda de retorno se deve especificamente ao custo adicional, algo que poderia ser medido por uma análise de custos decompostos.
-4.4. O que os gráficos finais mostram
-Os gráficos finais de patrimônio-base 100, agora com a oitava curva referente ao CDI, reforçam a leitura das tabelas:
-- 2017–2020: a carteira Momentum com pesos iguais acumula patrimônio muito superior ao GJR e aos índices. A diferença entre as duas versões amplia-se sobretudo ao longo da recuperação posterior ao choque de março de 2020. O CDI segue trajetória de crescimento suave; serve como contraponto de baixo risco, não como uma carteira acionária comparável em volatilidade.
-- 2021: as curvas de Momentum com pesos iguais e GJR têm movimentos muito próximos, ambas encerram o ano acima dos índices de ações e da linha do CDI, mas os pesos iguais permanecem à frente. O CDI aparece com crescimento progressivo, enquanto a maior parte dos índices de ações termina abaixo de 100.
-Os patrimônios são reiniciados em R$ 100 no começo de cada período e incorporam custos apenas nas carteiras com turnover. As curvas dos índices e do CDI são referências teóricas sem custos; o gráfico não mede ganho líquido acima do CDI por meio de subtração de patrimônios, apenas mostra as trajetórias no mesmo eixo.
-5. Exposição ao Ibovespa: beta, correlação e eficiência ativa
-Além do Sharpe, o notebook avaliou o comportamento relativo ao IBOV. Essas medidas continuam válidas após incluir o CDI porque usam retorno ativo em relação ao Ibovespa, não retorno excedente à taxa livre de risco.
-Período	Estratégia	Beta IBOV	Correlação IBOV	Retorno ativo anualizado (%)	Tracking error (%)	Information Ratio
-2017–2020	Momentum igual	1,040	0,805	25,273	21,605	1,170
-2017–2020	Momentum GJR	0,958	0,796	16,879	20,529	0,822
-2017–2020	Equiponderada 30	0,961	0,967	9,692	7,189	1,348
-2021	Momentum igual	1,085	0,678	38,418	24,779	1,550
-2021	Momentum GJR	1,083	0,683	36,306	24,330	1,492
-2021	Equiponderada 30	0,975	0,967	14,228	5,430	2,620
+Entretanto, essa redução não foi suficiente para compensar a perda de retorno: o Sharpe caiu de 1,115 para 0,950.
 
+O GJR também apresentou menor drawdown, de -45,92%, comparado a -51,29% da estratégia com pesos iguais. Esse resultado sugere alguma capacidade de proteção durante episódios de perda acentuada, embora essa proteção não tenha gerado maior eficiência segundo o Sharpe.
 
-O Information Ratio anualizado usa o retorno ativo diário da carteira em relação ao Ibovespa, dividido pelo seu tracking error:
+### 3.2. Validação — 2021
+
+| Estratégia | Retorno anual (%) | Volatilidade (%) | Sharpe com CDI | Max Drawdown (%) | Turnover anual |
+|---|---:|---:|---:|---:|---:|
+| **Momentum 12–1 Top 5** | **24,656** | 33,602 | **0,695** | -23,028 | 5,746 |
+| **Momentum Top 5 + GJR** | 22,197 | 33,244 | 0,639 | -23,756 | 6,567 |
+| Equiponderada 30 | 1,249 | 21,167 | -0,040 | -18,479 | 0,851 |
+| IDIV | -6,538 | 19,059 | -0,486 | -15,993 | 0,000 |
+| IBXL | -10,742 | 21,474 | -0,623 | -23,428 | 0,000 |
+| IBOV | -12,153 | 20,987 | -0,718 | -22,941 | 0,000 |
+| SMLL | -16,496 | 25,528 | -0,747 | -31,305 | 0,000 |
+
+Na validação, as duas estratégias Momentum continuaram apresentando desempenho superior aos benchmarks acionários.
+
+O Momentum com pesos iguais obteve retorno anualizado de 24,66%, enquanto o GJR apresentou 22,20%.
+
+A volatilidade foi novamente menor na estratégia GJR, mas a redução foi bastante pequena: aproximadamente 0,36 ponto percentual.
+
+O Sharpe com CDI permaneceu superior na versão com pesos iguais, registrando 0,695 contra 0,639 do GJR.
+
+Além disso, diferentemente do treinamento, o GJR não melhorou o drawdown, que passou de -23,03% para -23,76%.
+
+Esse resultado indica que a proteção observada no treinamento não se repetiu integralmente em 2021.
+
+## 4. Contribuição incremental do GJR-GARCH
+
+Para investigar especificamente a contribuição do modelo, comparamos as duas regras de ponderação mantendo constantes o sinal Momentum, as cinco ações selecionadas, as datas de negociação e os custos.
+
+| Métrica | Efeito do GJR em 2017–2020 | Efeito do GJR em 2021 |
+|---|---:|---:|
+| Retorno anualizado | -10,717 p.p. | -2,459 p.p. |
+| Volatilidade | -2,502 p.p. | -0,358 p.p. |
+| Sharpe com CDI | -0,165 | -0,056 |
+| Max Drawdown | Melhora 5,377 p.p. | Piora 0,728 p.p. |
+| Turnover anual | +1,067 | +0,821 |
+
+### 4.1. Redução de volatilidade
+
+A principal contribuição positiva do GJR-GARCH foi a redução da volatilidade realizada da carteira.
+
+No treinamento, a volatilidade diminuiu aproximadamente 6,9% em termos relativos. Na validação, a redução foi de apenas 1,1%.
+
+Isso indica que a ponderação inversa à volatilidade prevista conseguiu diminuir o risco total, mas seu efeito foi mais expressivo no treinamento.
+
+É importante destacar que essa constatação não demonstra, isoladamente, que o GJR ofereça previsões de volatilidade superiores às de modelos mais simples.
+
+Para avaliar a qualidade preditiva do modelo, seria necessário comparar suas previsões com medidas de volatilidade realizada, utilizando métricas como QLIKE ou erro quadrático.
+
+### 4.2. Efeito sobre o retorno
+
+A ponderação por GJR-GARCH apresentou retornos inferiores à ponderação igualitária nos dois períodos.
+
+Uma hipótese econômica para esse resultado é que ações de Momentum elevado também podem apresentar volatilidade elevada. Nesse caso, a ponderação inversa à volatilidade reduziria a exposição justamente a algumas ações com maior potencial de valorização.
+
+Porém, essa hipótese ainda precisa ser testada por meio da análise dos pesos e das contribuições individuais de cada ativo.
+
+Os resultados permitem concluir que houve redução do retorno, mas não identificar definitivamente qual mecanismo produziu essa redução.
+
+### 4.3. Índice de Sharpe
+
+A redução de volatilidade não foi acompanhada por melhora do Índice de Sharpe.
+
+No treinamento, o Sharpe caiu de 1,115 para 0,950. Na validação, caiu de 0,695 para 0,639.
+
+Isso significa que o retorno excedente ao CDI diminuiu proporcionalmente mais do que o benefício proporcionado pela redução de risco.
+
+Portanto, **a ponderação por GJR-GARCH não melhorou o desempenho ajustado ao risco da estratégia Momentum na configuração testada**.
+
+Essa conclusão permanece válida mesmo após incorporar o CDI, diferentemente das análises preliminares realizadas com taxa livre de risco igual a zero.
+
+### 4.4. Drawdown
+
+O comportamento do máximo drawdown foi diferente entre os dois períodos.
+
+Durante o treinamento, o GJR reduziu a maior perda acumulada de 51,29% para 45,92%, uma melhora de aproximadamente 5,38 pontos percentuais.
+
+Entretanto, na validação, o drawdown foi ligeiramente maior com o GJR.
+
+Assim, não há evidência de uma proteção consistente contra perdas extremas nos dois períodos examinados.
+
+### 4.5. Turnover e custos
+
+A estratégia com GJR apresentou maior turnover anual nos dois períodos.
+
+No treinamento, o turnover aumentou de 6,034 para 7,101. Em 2021, passou de 5,746 para 6,567.
+
+Isso ocorre porque os pesos da estratégia variam não apenas com as mudanças nas ações selecionadas, mas também com as atualizações das previsões de volatilidade.
+
+O maior volume de negociação gera custos adicionais e pode reduzir a rentabilidade líquida.
+
+Os resultados já consideram um custo de 0,10% sobre o turnover, mas ainda não foi realizada uma decomposição que determine quanto da perda de retorno do GJR decorre exclusivamente dos custos de transação.
+
+## 5. Comparação com o Ibovespa
+
+Além das métricas tradicionais, foram calculados beta, correlação, retorno ativo, tracking error e Information Ratio em relação ao Ibovespa.
+
+| Período | Estratégia | Beta IBOV | Correlação | Retorno ativo (%) | Tracking Error (%) | Information Ratio |
+|---|---|---:|---:|---:|---:|---:|
+| 2017–2020 | Momentum Top 5 | 1,040 | 0,805 | 25,273 | 21,605 | 1,170 |
+| 2017–2020 | Momentum + GJR | 0,958 | 0,796 | 16,879 | 20,529 | 0,822 |
+| 2017–2020 | Equiponderada 30 | 0,961 | 0,967 | 9,692 | 7,189 | 1,348 |
+| 2021 | Momentum Top 5 | 1,085 | 0,678 | 38,418 | 24,779 | 1,550 |
+| 2021 | Momentum + GJR | 1,083 | 0,683 | 36,306 | 24,330 | 1,492 |
+| 2021 | Equiponderada 30 | 0,975 | 0,967 | 14,228 | 5,430 | 2,620 |
+
+### 5.1. Beta e correlação
+
+Durante o treinamento, a introdução do GJR reduziu o beta da carteira de 1,040 para 0,958.
+
+Isso sugere que a ponderação por volatilidade também diminuiu sua sensibilidade média aos movimentos do Ibovespa nesse período.
+
+Entretanto, em 2021, os betas das duas estratégias foram praticamente idênticos: 1,085 e 1,083.
+
+Portanto, a redução da volatilidade total não necessariamente implica redução proporcional do risco sistemático.
+
+A correlação do Momentum com o Ibovespa também foi menor do que a da carteira equiponderada, sugerindo maior importância de fatores específicos da seleção de ativos e de outras fontes de risco não capturadas pelo índice.
+
+### 5.2. Retorno ativo e Information Ratio
+
+O Information Ratio mede o retorno ativo médio em relação ao benchmark por unidade de tracking error.
+
 \[
-IR = \frac{\overline{r_{p,t}-r_{IBOV,t}}}{\operatorname{sd}(r_{p,t}-r_{IBOV,t})}\sqrt{252}.
+IR =
+\frac{E[r_{p,t}-r_{IBOV,t}]}
+{\sigma(r_{p,t}-r_{IBOV,t})}
+\sqrt{252}
 \]
-O retorno ativo da tabela é a diferença média diária anualizada aritmeticamente, não a simples diferença entre os retornos anuais compostos da seção 3.
 
-Interpretação específica do GJR: o beta cai de 1,040 para 0,958 no treinamento, mas permanece praticamente igual em 2021 (1,085 versus 1,083). Logo, reduzir a volatilidade total não necessariamente diminui a exposição sistemática ao mercado. O tracking error cai um pouco em ambos os períodos, porém o retorno ativo também diminui, resultando em IR inferior para o GJR (1,170 → 0,822 no treinamento; 1,550 → 1,492 em 2021).
+O Momentum com pesos iguais apresentou Information Ratio superior ao GJR nos dois períodos.
 
-A Equiponderada 30 apresenta IR maior que ambas as versões de Momentum, especialmente em 2021 (2,620), pois acompanha muito de perto o IBOV (correlação de 0,967) e apresenta tracking error pequeno. Isso não significa maior retorno absoluto ou maior Sharpe: o IR mede retorno ativo por unidade de desvio em relação ao benchmark, enquanto o Sharpe utiliza o CDI como referência de retorno livre de risco.
-6. Interpretação econômica: o que pode e o que não pode ser concluído
-Achados sustentados pelos resultados
-1. O sinal Momentum produziu carteiras com retornos e Sharpes superiores aos quatro índices de ações e à Equiponderada 30 nos dois períodos examinados.
-2. O GJR-GARCH(756) diminuiu a volatilidade realizada, mas não melhorou o Sharpe com CDI nem o Information Ratio do Momentum Top 5.
-3. A redução de drawdown no treinamento não se repetiu na validação; o GJR apresentou turnover superior nos dois períodos.
-4. Os resultados relativos a IBOV sugerem que o Momentum assume um perfil de risco diferente do mercado amplo, mas não demonstram por si só geração de alfa estatisticamente significativo.
-Hipóteses ainda não verificadas
-- Se a previsão GJR é estatisticamente mais precisa que a volatilidade histórica simples, EWMA ou GARCH simétrico.
-- Se a perda de retorno do GJR decorre de menores pesos nas ações vencedoras, de maior custo de giro, de concentração/correlação ou da interação entre esses mecanismos.
-- Se a diferença de Sharpe ou retorno entre as duas regras é estatisticamente significativa.
-- Se o resultado persistiria em um universo historicamente investível e livre de viés de sobrevivência ou no teste reservado de 2022–2026.
-A interpretação adequada é, portanto, restrita à regra de alocação examinada: neste backtest, aplicar pesos inversos à volatilidade prevista pelo GJR não superou manter pesos iguais entre as cinco ações selecionadas por Momentum. Isso é diferente de concluir que o uso de GARCH é improdutivo em geral.
-7. Limitações metodológicas
-1. Uma especificação GJR específica: apenas Momentum 12–1 / Top 5 / ("gjr", 756) nesta comparação final; resultados não generalizam automaticamente a outras combinações.
-2. Seleção retrospectiva do universo: as 30 ações podem introduzir survivorship bias e viés de seleção ex post; a elegibilidade dinâmica de 21 dias não elimina o problema.
-3. Validação curta: 2021 contém apenas um ano e já houve exploração de parametrizações em etapas anteriores do projeto. Deve-se evitar otimizar retrospectivamente a estratégia para 2021 e depois chamá-lo de teste independente.
-4. Benchmarks sem custos: índices e CDI têm turnover zero; não se consideram despesas e fricções da aplicação efetiva nesses instrumentos.
-5. Sem teste formal da diferença de desempenho: resultados de Sharpe, IR e drawdown são descritivos; não há intervalo de confiança nem teste de superioridade estatística.
-6. Sem alfa CAPM: beta e correlação foram calculados, mas não há saída de regressão com alfa, p-valor ou HAC no notebook atualizado. O uso do CDI no Sharpe não equivale à estimação de alfa CAPM.
-7. Sem avaliação direta da qualidade das previsões: volatilidade realizada menor da carteira não comprova menor erro de previsão do GJR.
-8. Cache reutilizado: o notebook informa cache: 1/1 especificações prontas e zero fallback; não comprova reestimação do GJR nessa execução. É necessário auditar o cache para reprodutibilidade plena.
-9. Exposição e calendários: a Equiponderada 30 começa a operar após a primeira formação, enquanto os índices e o CDI já apresentam retornos no início de 2017. As datas foram alinhadas na análise, mas não se padronizou o início efetivo de exposição para todos os comparadores.
-10. Fonte dos índices: é necessário preservar a exportação Economatica e documentar seus ajustes e convenções de séries (por exemplo, preços versus retorno total), para garantir comparabilidade econômica.
-8. Organização dos arquivos e reprodução
-Estrutura utilizada pelo código, com o README colocado ao lado do notebook:
+No treinamento, o IR caiu de 1,170 para 0,822 com a introdução do GJR. Em 2021, caiu de 1,550 para 1,492.
+
+Embora o GJR tenha reduzido moderadamente o tracking error, também diminuiu o retorno ativo da carteira, resultando em pior eficiência em relação ao benchmark.
+
+A carteira equiponderada apresentou Information Ratio mais elevado que as estratégias Momentum, especialmente em 2021. Isso se explica por sua elevada correlação com o Ibovespa e pelo menor tracking error.
+
+Contudo, o maior Information Ratio não significa necessariamente maior retorno absoluto ou maior Sharpe.
+
+## 6. Interpretação dos gráficos de patrimônio
+
+Os gráficos apresentam a evolução de um patrimônio inicial de R$ 100 em cada período, considerando os retornos líquidos dos custos modelados para as carteiras.
+
+### 6.1. Treinamento
+
+Entre 2017 e 2020, o Momentum com pesos iguais apresentou a maior valorização acumulada.
+
+A estratégia GJR acompanhou parte dessa valorização, mas terminou o período com patrimônio significativamente inferior.
+
+As diferenças entre as estratégias tornaram-se especialmente expressivas durante a recuperação posterior à queda de março de 2020.
+
+Embora o GJR tenha reduzido o máximo drawdown, não conseguiu acompanhar integralmente os ganhos posteriores do Momentum com pesos iguais.
+
+O CDI apresentou crescimento mais estável, servindo como referência de retorno de baixo risco.
+
+### 6.2. Validação
+
+Em 2021, as duas estratégias Momentum apresentaram trajetórias bastante semelhantes.
+
+Ambas terminaram o período com retorno positivo, superando os índices de ações e o CDI.
+
+O Momentum com pesos iguais, entretanto, encerrou o ano à frente da versão ponderada pelo GJR.
+
+A proximidade entre as curvas também é consistente com a redução relativamente pequena de volatilidade observada nessa amostra.
+
+## 7. Limitações metodológicas
+
+Apesar dos resultados relevantes, algumas limitações precisam ser consideradas.
+
+**Viés de sobrevivência:** o universo de 30 ações pode ter sido selecionado com base em informações disponíveis posteriormente aos períodos históricos analisados. Isso pode produzir resultados excessivamente favoráveis ao backtest.
+
+**Validação curta:** a amostra de validação compreende apenas 2021, o que limita a generalização dos resultados para diferentes regimes de mercado.
+
+**Uma configuração específica:** esta comparação utiliza Momentum 12–1, seleção Top 5 e GJR com 756 pregões de estimação. Outras combinações podem produzir resultados diferentes.
+
+**Ausência de teste formal de significância:** as diferenças de Sharpe e retorno foram avaliadas descritivamente. Ainda não foram realizados testes estatísticos para determinar se são significativamente diferentes de zero.
+
+**Precisão da previsão de volatilidade:** a redução da volatilidade da carteira não demonstra que o GJR apresenta maior capacidade preditiva do que EWMA, GARCH tradicional ou volatilidade histórica simples.
+
+**Custos de implementação:** os custos modelados não incluem todas as fricções do mercado, como spread, impacto de mercado, impostos e possíveis dificuldades de execução.
+
+**Benchmark e CDI:** os índices e o CDI foram representados sem custos de replicação. As métricas de Sharpe incorporam o CDI, mas ainda não foi estimado o alfa CAPM utilizando retornos excedentes à taxa livre de risco.
+
+**Cache do GJR:** a execução utilizou previsões armazenadas previamente. A reprodução integral exige preservar ou reestimar essas previsões com os mesmos dados e parâmetros.
+
+## 8. Organização e reprodução
+
+Estrutura dos principais arquivos:
+
+```text
 TraineeFGVquant/
 ├── baseDeDados/
 │   ├── economatica-3.xlsx
 │   ├── indices_benchmark_limpo.xlsx
-│   └── cdi_sgs12.csv                  # cache histórico SGS 12
-├── cache_vol_mensal.pkl               # cache de previsões do GJR
+│   └── cdi_sgs12.csv
+│
+├── cache_vol_mensal.pkl
+│
 └── notebooks e resultados/
     ├── momentum com garch/
     │   ├── initial_test.py
     │   └── funcoes_momentum.py
+    │
     └── benchmarcks/
-        ├── comparacao_benchmarks.ipynb
-        └── README.md
-Dependências: Python com pandas, numpy, openpyxl, matplotlib, arch e requests, compatíveis com o kernel Jupyter. O notebook encontra a raiz do repositório procurando baseDeDados/economatica-3.xlsx e importa os módulos existentes de notebooks e resultados/momentum com garch/.
+        └── comparacao_benchmarks/
+            ├── comparacao_benchmarks.ipynb
+            └── README.md
+```
 
-Para executar em outra máquina:
-- A célula dos índices contém o caminho absoluto C:\Users\julio\Downloads\economatica (1).xlsx. Para reprodução, use a exportação bruta local ou leia diretamente o baseDeDados/indices_benchmark_limpo.xlsx já gerado, via pd.read_excel(..., index_col=0, parse_dates=True). Esse arquivo limpo não deve ser processado novamente com load_data(), que espera o formato de exportação original da Economatica.
-- A célula inicial define arquivo dentro do laço de busca da raiz. Para evitar erro caso o diretório de execução já seja a própria raiz, recomenda-se definir arquivo = raiz / "baseDeDados" / "economatica-3.xlsx" depois do laço, incondicionalmente.
-- O CDI é carregado pela função já existente baixar_cdi() a partir do cache; se ausente, o notebook recupera o CSV do commit histórico fixado, evitando depender da API do BCB. O CSV deve permanecer disponível para a reprodução offline.
-- O GJR exige que o cache de previsões seja compatível com os dados e parâmetros ou que seja possível reestimá-lo com a biblioteca arch.
-- Execute as células na ordem. A tabela de Sharpe com CDI está na célula que cria tabelas_finais_cdi; a célula posterior adiciona o CDI ao dicionário de benchmarks e a última gera os dois gráficos com oito curvas.
-Estado da verificação
-Nesta atualização, foram inspecionadas as 17 células, as saídas numéricas salvas e os dois gráficos finais do notebook atualizado. Em uma verificação anterior da versão original, as métricas da carteira Momentum de pesos iguais e da Equiponderada 30 foram reproduzidas com a base de ações. Não se afirma aqui que o GJR, os índices ou a nova série CDI tenham sido reestimados ou recalculados independentemente nesta revisão. Os números das tabelas com CDI acima foram transcritos das saídas efetivamente registradas no arquivo enviado.
-9. Conclusão e próximos testes
-A comparação final reforça que o efeito econômico mais relevante foi a seleção por Momentum, enquanto a ponderação por volatilidade prevista via GJR-GARCH(756) reduziu parte do risco, mas não acrescentou eficiência ajustada ao risco segundo Sharpe com CDI e Information Ratio. A proteção de drawdown foi observada em treinamento, mas não em 2021; em contrapartida, o turnover foi sistematicamente maior.
+O notebook utiliza as funções já implementadas em `initial_test.py` e `funcoes_momentum.py`.
 
-A próxima etapa mais informativa não é apenas reestimar o mesmo GJR: é comparar pesos iguais, volatilidade histórica simples, EWMA, GARCH simétrico e GJR, mantendo idênticos o sinal de Momentum, a seleção, as datas e os custos. Em paralelo, vale decompor retorno e turnover por ação, avaliar a precisão preditiva da volatilidade e examinar a incerteza estatística das diferenças. Por fim, os parâmetros devem ser congelados antes de abrir a amostra reservada de 2022–2026.
-Proveniência: comparacao_benchmarks(1).ipynb enviado para atualização do README; resultados extraídos das saídas salvas do notebook. O CDI foi incorporado ao Sharpe e aos gráficos finais. A ausência de CDI como linha das tabelas é consequência da ordem de execução das células, não uma exclusão deliberada da comparação visual.
+As principais bibliotecas necessárias são `pandas`, `numpy`, `matplotlib`, `openpyxl`, `requests` e `arch`.
+
+A função `baixar_cdi()` permite utilizar a série diária do CDI armazenada em cache, enquanto `calcular_metricas()` recebe essa série para calcular o Sharpe com taxa livre de risco.
+
+Para reproduzir o estudo, é necessário garantir que as bases de preços, os índices e as previsões de volatilidade estejam disponíveis e que as células sejam executadas na ordem correta.
+
+As tabelas finais com CDI foram calculadas antes da inclusão do CDI como estratégia independente no dicionário de benchmarks. Por esse motivo, as tabelas apresentam sete alternativas, enquanto os gráficos finais incluem oito curvas.
+
+## 9. Conclusão
+
+O experimento investigou se a utilização da volatilidade prevista por GJR-GARCH para ponderar uma carteira de ações selecionadas por Momentum melhora o desempenho ajustado ao risco.
+
+Os resultados mostram que a estratégia Momentum apresentou desempenho superior aos benchmarks acionários tanto no treinamento quanto na validação.
+
+Entretanto, **a incorporação do GJR-GARCH não melhorou o desempenho ajustado ao risco em nenhuma das duas amostras analisadas**.
+
+A ponderação inversa à volatilidade prevista conseguiu reduzir a volatilidade realizada, especialmente no treinamento, mas esse benefício foi acompanhado por perda de retorno, redução do Índice de Sharpe e aumento do turnover.
+
+A redução do máximo drawdown durante o treinamento representa um benefício potencial, mas essa proteção não se manteve em 2021.
+
+Assim, a principal conclusão é que **a seleção de ações por Momentum produziu resultados favoráveis, enquanto a utilização do GJR-GARCH como regra de ponderação não demonstrou contribuição econômica adicional consistente na configuração examinada**.
+
+Isso não significa que o GJR-GARCH seja inadequado para prever volatilidade ou que modelos de volatilidade não possam melhorar estratégias quantitativas. Os resultados indicam apenas que, nesta aplicação específica, a menor volatilidade realizada não se traduziu em maior eficiência ajustada ao risco.
+
+### Próximas etapas
+
+Para aprofundar a pesquisa, recomenda-se comparar a ponderação igualitária com métodos alternativos de estimação de volatilidade, incluindo volatilidade histórica, EWMA, GARCH tradicional e GJR-GARCH, mantendo constantes os sinais de Momentum e as regras de negociação.
+
+Também seria relevante avaliar a precisão das previsões, decompor os custos de transação, analisar a concentração das posições e realizar testes estatísticos das diferenças de desempenho.
+
+Após consolidar essas análises e definir os parâmetros finais, o projeto poderá avançar para o teste fora da amostra de 2022–2026, preservando a independência desse período.
+
+---
+
+**Fonte:** resultados e saídas do notebook `comparacao_benchmarks.ipynb`, com dados da Economatica e CDI diário do Banco Central.
+
+**Observação:** os resultados apresentados correspondem ao treinamento de 2017–2020 e à validação de 2021. Não representam resultados do período reservado de teste final.
