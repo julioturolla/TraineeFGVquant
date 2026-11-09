@@ -382,3 +382,5 @@ if __name__ == "__main__":
     # Planilha: procura 'bases de dados/economatica-3.xlsx' nas pastas acima (como no notebook).
     # Ou passe o caminho:  run(path=r"bases de dados\economatica-3.xlsx")
     out = run(janela="12-1", vol=("gjr", 756), plot_path="notebooks e resultados\momentum com garch\momentum_garch_resultado.png")
+
+baixar_cdi('2017-01-01', '2026-10-31')
